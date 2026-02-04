@@ -44,16 +44,19 @@ INSTALLED_APPS = [
     'corsheaders',
     'rest_framework_simplejwt',
     'django_filters',
-    'drf_yasg',
     'rest_framework_simplejwt.token_blacklist',
+    'drf_yasg',  # API documentation
+    'django_extensions',  # Development utilities
+    'django_celery_results',  # Celery results backend
+    'django_celery_beat',  # Celery periodic tasks
 
     # Local apps
-    'invoices',
+    'invoice',
     'users',
     'business',
     'expenses',
     'reports',
-    'payments',
+    # 'payments',
 ]
 
 MIDDLEWARE = [
@@ -66,6 +69,17 @@ MIDDLEWARE = [
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 ]
+
+if DEBUG:
+    INSTALLED_APPS += ['debug_toolbar']
+    # Debug toolbar middleware should be as early as possible after security middleware.
+    MIDDLEWARE = [
+        'debug_toolbar.middleware.DebugToolbarMiddleware',
+        *MIDDLEWARE,
+    ]
+    INTERNAL_IPS = [
+        '127.0.0.1',
+    ]
 
 ROOT_URLCONF = 'smartinvoice.urls'
 
@@ -90,10 +104,21 @@ WSGI_APPLICATION = 'smartinvoice.wsgi.application'
 # Database
 # https://docs.djangoproject.com/en/5.2/ref/settings/#databases
 
+# DATABASES = {
+#     'default': {
+#         'ENGINE': 'django.db.backends.sqlite3',
+#         'NAME': BASE_DIR / 'db.sqlite3',
+#     }
+# }
+
 DATABASES = {
     'default': {
-        'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': BASE_DIR / 'db.sqlite3',
+        'ENGINE': 'django.db.backends.postgresql',
+        'NAME': 'smart_invoice',
+        'USER': 'postgres',
+        'PASSWORD': 'postgres',
+        'HOST': 'localhost',
+        'PORT': '5432',
     }
 }
 
@@ -200,6 +225,15 @@ CORS_ALLOWED_ORIGINS = [
     "http://127.0.0.1:3000",
 ]
 
+# Celery Configuration
+CELERY_BROKER_URL = 'redis://localhost:6379/0'
+CELERY_RESULT_BACKEND = 'django-db'
+CELERY_ACCEPT_CONTENT = ['application/json']
+CELERY_TASK_SERIALIZER = 'json'
+CELERY_RESULT_SERIALIZER = 'json'
+CELERY_TIMEZONE = TIME_ZONE
+CELERY_BEAT_SCHEDULER = 'django_celery_beat.schedulers:DatabaseScheduler'
+
 # Email settings (for development)
 EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'  # For development
 # For production, use:
@@ -212,3 +246,6 @@ EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'  # For developm
 
 DEFAULT_FROM_EMAIL = 'noreply@smartinvoice.com'
 FRONTEND_URL = 'http://localhost:3000'  #  Next.js frontend URL
+
+# # RedisCelery
+# CELERY_BROKER_URL = config('REDIS_URL', default='redis://localhost:6379/0')
