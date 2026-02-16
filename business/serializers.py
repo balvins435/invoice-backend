@@ -3,11 +3,15 @@ from .models import Business
 
 
 class BusinessSerializer(serializers.ModelSerializer):
+    business_name = serializers.CharField(source='name')
+    phone = serializers.CharField(required=False, allow_blank=True)
+    address = serializers.CharField(required=False, allow_blank=True)
+
     class Meta:
         model = Business
         fields = [
             'id',
-            'name',
+            'business_name',
             'email',
             'phone',
             'address',
