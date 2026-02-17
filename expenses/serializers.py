@@ -40,7 +40,10 @@ class ExpenseSerializer(serializers.ModelSerializer):
         category_value = str(raw_category).strip().lower()
         if not category_value:
             return None
-        category, _ = ExpenseCategory.objects.get_or_create(name=category_value)
+        category = ExpenseCategory.objects.filter(name=category_value).order_by('id').first()
+        if category:
+            return category
+        category = ExpenseCategory.objects.create(name=category_value)
         return category
 
     def to_representation(self, instance):

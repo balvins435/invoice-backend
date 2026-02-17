@@ -1,6 +1,7 @@
 from django.db import models
 from business.models import Business
 from django.conf import settings
+from decimal import Decimal
 
 
 class ExpenseCategory(models.Model):
@@ -36,7 +37,7 @@ class Expense(models.Model):
     vat_amount = models.DecimalField(
         max_digits=10,
         decimal_places=2,
-        default=0.00
+        default=Decimal('0.00')
     )
     total_amount = models.DecimalField(max_digits=10, decimal_places=2)
     tax_deductible = models.BooleanField(default=True)
@@ -54,7 +55,9 @@ class Expense(models.Model):
         ordering = ['-expense_date']
 
     def save(self, *args, **kwargs):
-        self.total_amount = self.amount + self.vat_amount
+        amount = self.amount if isinstance(self.amount, Decimal) else Decimal(str(self.amount or 0))
+        vat = self.vat_amount if isinstance(self.vat_amount, Decimal) else Decimal(str(self.vat_amount or 0))
+        self.total_amount = amount + vat
         super().save(*args, **kwargs)
 
     def __str__(self):
