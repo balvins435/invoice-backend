@@ -39,6 +39,7 @@ class Expense(models.Model):
         default=0.00
     )
     total_amount = models.DecimalField(max_digits=10, decimal_places=2)
+    tax_deductible = models.BooleanField(default=True)
 
     expense_date = models.DateField()
     receipt = models.FileField(
