@@ -1,3 +1,5 @@
+import smtplib
+
 from rest_framework import viewsets, permissions, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
@@ -45,10 +47,21 @@ class InvoiceViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['post'])
     def send_email(self, request, pk=None):
         invoice = self.get_object()
-        send_invoice_email(invoice)
+        try:
+            send_invoice_email(invoice)
+        except smtplib.SMTPAuthenticationError:
+            return Response(
+                {'error': 'SMTP authentication failed. Check EMAIL_HOST_USER/EMAIL_HOST_PASSWORD.'},
+                status=status.HTTP_502_BAD_GATEWAY
+            )
+        except smtplib.SMTPException as exc:
+            return Response(
+                {'error': f'Email delivery failed: {exc}'},
+                status=status.HTTP_502_BAD_GATEWAY
+            )
+
         invoice.status = 'sent'
         invoice.save()
 
         return Response({'status': 'Invoice sent'})
-
 

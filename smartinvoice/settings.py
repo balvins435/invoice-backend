@@ -12,9 +12,13 @@ https://docs.djangoproject.com/en/5.2/ref/settings/
 import os
 from datetime import timedelta
 from pathlib import Path
+import environ
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
+
+env = environ.Env()
+environ.Env.read_env(BASE_DIR / '.env')
 
 
 # Quick-start development settings - unsuitable for production
@@ -236,17 +240,20 @@ CELERY_TIMEZONE = TIME_ZONE
 CELERY_BEAT_SCHEDULER = 'django_celery_beat.schedulers:DatabaseScheduler'
 
 # Email settings (for development)
-EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'  # For development
+# EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'  # For development
 # For production, use:
 EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
-EMAIL_HOST = 'smtp.gmail.com'
-EMAIL_PORT = 587
-EMAIL_USE_TLS = True
-EMAIL_HOST_USER = "vinnbalvins@gmail.com" 
-EMAIL_HOST_PASSWORD = "jixe dcci rjyw vqsz"
-DEFAULT_FROM_EMAIL = EMAIL_HOST_USER
+EMAIL_HOST = env('EMAIL_HOST', default='smtp.gmail.com')
+EMAIL_PORT = env.int('EMAIL_PORT', default=587)
+EMAIL_USE_TLS = env.bool('EMAIL_USE_TLS', default=True)
+EMAIL_HOST_USER = env('EMAIL_HOST_USER', default='')
+EMAIL_HOST_PASSWORD = env('EMAIL_HOST_PASSWORD', default='').replace(' ', '')
+_default_from_email = env('DEFAULT_FROM_EMAIL', default=EMAIL_HOST_USER)
+if _default_from_email in ('', 'EMAIL_HOST_USER'):
+    _default_from_email = EMAIL_HOST_USER
+DEFAULT_FROM_EMAIL = _default_from_email
 
-DEFAULT_FROM_EMAIL = 'noreply@smartinvoice.com'
+# DEFAULT_FROM_EMAIL = 'noreply@smartinvoice.com'
 FRONTEND_URL = 'http://localhost:3000'  #  Next.js frontend URL
 
 # # RedisCelery
