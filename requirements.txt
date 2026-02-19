@@ -1,53 +1,40 @@
 # Django & Core
-asgiref==3.11.0
 Django==5.2.10
-sqlparse==0.5.5
-timedelta==2020.12.3
-typing_extensions==4.15.0
 djangorestframework
 djangorestframework-simplejwt
 django-cors-headers
+django-filter
+drf-yasg
+
+# Runtime
+gunicorn
+whitenoise
 
 # Database
 psycopg2-binary
 
-# Authentication & Security
+# Configuration
 python-decouple
 django-environ
 
-# File Handling
-Pillow
-python-magic
-
 # PDF Generation
+Pillow
 reportlab
-xhtml2pdf
-# WeasyPrint is another option but has more dependencies
 
-# Email & Async Tasks
+# Async Tasks
 celery
 redis
 django-celery-results
 django-celery-beat
 
-# Filtering & Search
-django-filter
-# django-rest-framework-filters
-
-# API Documentation
-drf-yasg
-# or django-spectacular for OpenAPI 3
-
-# Validation & Utilities
+# Utilities
 phonenumbers
 python-dateutil
 
-# Development Tools
+# Development
 ipython
 django-extensions
 django-debug-toolbar
-
-# Testing
 pytest
 pytest-django
 pytest-cov
