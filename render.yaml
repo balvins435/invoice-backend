@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: smartinvoice-backend
+    env: python
+    rootDir: backend
+    buildCommand: pip install --upgrade pip && pip install -r requirements.txt && python manage.py collectstatic --no-input
+    startCommand: python manage.py migrate --no-input && gunicorn smartinvoice.wsgi:application --bind 0.0.0.0:$PORT --workers ${WEB_CONCURRENCY:-2} --timeout 120
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.8
+      - key: DJANGO_SETTINGS_MODULE
+        value: smartinvoice.settings
+      - key: WEB_CONCURRENCY
+        value: 2
