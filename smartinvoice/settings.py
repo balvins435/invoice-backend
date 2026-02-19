@@ -3,6 +3,7 @@ Django settings for smartinvoice project.
 """
 from datetime import timedelta
 from pathlib import Path
+from urllib.parse import urlparse
 
 import environ
 
@@ -16,6 +17,28 @@ env = environ.Env(
     CSRF_TRUSTED_ORIGINS=(list, []),
 )
 environ.Env.read_env(BASE_DIR / ".env")
+
+
+def _clean_origin(value: str) -> str:
+    origin = (value or "").strip().strip("<>").strip()
+    if origin.endswith("/"):
+        origin = origin[:-1]
+    return origin
+
+
+def _is_valid_origin(value: str) -> bool:
+    parsed = urlparse(value)
+    return bool(parsed.scheme and parsed.netloc)
+
+
+def _unique(seq):
+    seen = set()
+    out = []
+    for item in seq:
+        if item not in seen:
+            seen.add(item)
+            out.append(item)
+    return out
 
 SECRET_KEY = env(
     "SECRET_KEY",
@@ -205,17 +228,26 @@ SIMPLE_JWT = {
 }
 
 FRONTEND_URL = env("FRONTEND_URL", default="http://localhost:3000")
-CORS_ALLOWED_ORIGINS = env.list(
-    "CORS_ALLOWED_ORIGINS",
-    default=["http://localhost:3000", "http://127.0.0.1:3000"],
+_default_cors = ["http://localhost:3000", "http://127.0.0.1:3000"]
+_raw_cors = env.list("CORS_ALLOWED_ORIGINS", default=_default_cors)
+_cleaned_cors = [_clean_origin(origin) for origin in _raw_cors]
+
+frontend_origin = _clean_origin(FRONTEND_URL)
+if frontend_origin:
+    _cleaned_cors.append(frontend_origin)
+
+CORS_ALLOWED_ORIGINS = _unique(
+    [origin for origin in _cleaned_cors if _is_valid_origin(origin)]
 )
-if FRONTEND_URL and FRONTEND_URL not in CORS_ALLOWED_ORIGINS:
-    CORS_ALLOWED_ORIGINS.append(FRONTEND_URL)
 CORS_ALLOW_ALL_ORIGINS = env.bool("CORS_ALLOW_ALL_ORIGINS", default=DEBUG)
 
-CSRF_TRUSTED_ORIGINS = env.list("CSRF_TRUSTED_ORIGINS", default=[])
-if FRONTEND_URL.startswith(("http://", "https://")) and FRONTEND_URL not in CSRF_TRUSTED_ORIGINS:
-    CSRF_TRUSTED_ORIGINS.append(FRONTEND_URL)
+_raw_csrf = env.list("CSRF_TRUSTED_ORIGINS", default=[])
+_cleaned_csrf = [_clean_origin(origin) for origin in _raw_csrf]
+if frontend_origin:
+    _cleaned_csrf.append(frontend_origin)
+CSRF_TRUSTED_ORIGINS = _unique(
+    [origin for origin in _cleaned_csrf if _is_valid_origin(origin)]
+)
 
 CELERY_BROKER_URL = env("REDIS_URL", default="redis://localhost:6379/0")
 CELERY_RESULT_BACKEND = "django-db"
