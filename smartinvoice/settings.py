@@ -25,6 +25,7 @@ DEBUG = env.bool("DEBUG", default=False)
 
 ALLOWED_HOSTS = env.list("ALLOWED_HOSTS", default=[])
 render_external_hostname = env("RENDER_EXTERNAL_HOSTNAME", default="")
+is_render = bool(render_external_hostname) or env.bool("RENDER", default=False)
 if render_external_hostname and render_external_hostname not in ALLOWED_HOSTS:
     ALLOWED_HOSTS.append(render_external_hostname)
 if DEBUG and not ALLOWED_HOSTS:
@@ -98,6 +99,15 @@ WSGI_APPLICATION = "smartinvoice.wsgi.application"
 database_url = env("DATABASE_URL", default="")
 if database_url:
     DATABASES = {"default": env.db("DATABASE_URL")}
+elif is_render:
+    # On Render, avoid using localhost DB values from checked-in .env.
+    # Prefer DATABASE_URL; if it's missing, start with sqlite instead of crashing.
+    DATABASES = {
+        "default": {
+            "ENGINE": "django.db.backends.sqlite3",
+            "NAME": BASE_DIR / "db.sqlite3",
+        }
+    }
 else:
     db_name = env("DB_NAME", default="")
     if db_name:
