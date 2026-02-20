@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Invoice {{ invoice.invoice_number }}</title>
+    <style>
+        body { font-family: Arial, sans-serif; color: #1f2937; line-height: 1.6; }
+        .container { max-width: 620px; margin: 0 auto; padding: 20px; }
+        .header { background: #0f172a; color: #ffffff; padding: 18px 22px; border-radius: 8px 8px 0 0; }
+        .content { border: 1px solid #e5e7eb; border-top: 0; padding: 22px; border-radius: 0 0 8px 8px; }
+        .meta { background: #f8fafc; border: 1px solid #e5e7eb; border-radius: 8px; padding: 14px; margin: 16px 0; }
+        .footer { color: #6b7280; font-size: 12px; margin-top: 20px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h2 style="margin:0;">{{ business.name }}</h2>
+            <p style="margin:6px 0 0;">Invoice {{ invoice.invoice_number }}</p>
+        </div>
+        <div class="content">
+            <p>Hello {{ invoice.client_name }},</p>
+            <p>Please find your invoice attached as a PDF.</p>
+
+            <div class="meta">
+                <p style="margin:0 0 6px;"><strong>Issue date:</strong> {{ invoice.issue_date }}</p>
+                <p style="margin:0 0 6px;"><strong>Due date:</strong> {{ invoice.due_date }}</p>
+                <p style="margin:0;"><strong>Amount due:</strong> KES {{ invoice.total_amount }}</p>
+            </div>
+
+            <p>If you have any questions, reply to this email.</p>
+            <p>Regards,<br>{{ business.name }}</p>
+            <p class="footer">This is a transactional invoice email from SmartInvoice.</p>
+        </div>
+    </div>
+</body>
+</html>

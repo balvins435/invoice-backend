@@ -5,14 +5,26 @@ from socket import timeout as socket_timeout
 from urllib import error as urlerror
 from urllib import request as urlrequest
 
-from django.core.mail import EmailMessage, get_connection
+from django.core.mail import EmailMultiAlternatives, get_connection
 from django.conf import settings
+from django.template.loader import render_to_string
 
 from .utils import generate_invoice_pdf
 
 
 class InvoiceEmailError(Exception):
     """Raised when invoice email delivery fails."""
+
+
+def _build_invoice_email_content(invoice):
+    context = {
+        "invoice": invoice,
+        "business": invoice.business,
+    }
+    subject = f"Invoice {invoice.invoice_number} from {invoice.business.name}"
+    text_content = render_to_string("emails/invoice_email.txt", context)
+    html_content = render_to_string("emails/invoice_email.html", context)
+    return subject, text_content, html_content
 
 
 def _send_via_sendgrid(invoice, pdf_bytes):
@@ -24,18 +36,28 @@ def _send_via_sendgrid(invoice, pdf_bytes):
     if not from_email:
         raise InvoiceEmailError("SENDGRID_FROM_EMAIL or DEFAULT_FROM_EMAIL must be configured.")
 
+    subject, text_content, html_content = _build_invoice_email_content(invoice)
+
     payload = {
         "from": {"email": from_email},
         "personalizations": [
             {
                 "to": [{"email": invoice.client_email}],
-                "subject": f"Invoice {invoice.invoice_number}",
+                "subject": subject,
             }
         ],
+        "reply_to": {"email": from_email},
+        "headers": {
+            "X-Auto-Response-Suppress": "All",
+        },
         "content": [
             {
                 "type": "text/plain",
-                "value": f"Dear {invoice.client_name},\n\nPlease find your invoice attached.",
+                "value": text_content,
+            },
+            {
+                "type": "text/html",
+                "value": html_content,
             }
         ],
         "attachments": [
@@ -71,12 +93,18 @@ def _send_via_sendgrid(invoice, pdf_bytes):
 
 
 def _send_via_smtp(invoice, pdf_bytes):
-    email = EmailMessage(
-        subject=f"Invoice {invoice.invoice_number}",
-        body=f"Dear {invoice.client_name},\n\nPlease find your invoice attached.",
+    subject, text_content, html_content = _build_invoice_email_content(invoice)
+
+    email = EmailMultiAlternatives(
+        subject=subject,
+        body=text_content,
         to=[invoice.client_email],
         connection=get_connection(fail_silently=False),
+        headers={
+            "X-Auto-Response-Suppress": "All",
+        },
     )
+    email.attach_alternative(html_content, "text/html")
 
     email.attach(
         f"{invoice.invoice_number}.pdf",

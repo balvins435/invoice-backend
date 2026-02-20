@@ -1,0 +1,14 @@
+Hello {{ invoice.client_name }},
+
+Please find your invoice {{ invoice.invoice_number }} attached as a PDF.
+
+Invoice details:
+- Business: {{ business.name }}
+- Issue date: {{ invoice.issue_date }}
+- Due date: {{ invoice.due_date }}
+- Amount due: KES {{ invoice.total_amount }}
+
+If you have any questions, reply to this email.
+
+Regards,
+{{ business.name }}
