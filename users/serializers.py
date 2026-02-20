@@ -35,4 +35,34 @@ class RegisterSerializer(serializers.ModelSerializer):
 class UserSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
-        fields = ['id', 'email', 'full_name', 'created_at']
+        fields = [
+            'id',
+            'email',
+            'full_name',
+            'email_invoice_updates',
+            'email_weekly_summary',
+            'email_marketing',
+            'created_at',
+        ]
+
+
+class UpdateProfileSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = User
+        fields = [
+            'full_name',
+            'email_invoice_updates',
+            'email_weekly_summary',
+            'email_marketing',
+        ]
+
+
+class ChangePasswordSerializer(serializers.Serializer):
+    current_password = serializers.CharField(write_only=True)
+    new_password = serializers.CharField(write_only=True, min_length=8)
+    confirm_password = serializers.CharField(write_only=True)
+
+    def validate(self, attrs):
+        if attrs['new_password'] != attrs['confirm_password']:
+            raise serializers.ValidationError({'confirm_password': 'Passwords do not match.'})
+        return attrs
