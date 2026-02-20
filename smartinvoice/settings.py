@@ -271,10 +271,10 @@ DEFAULT_FROM_EMAIL = _default_from_email
 
 # Email provider selection:
 # - Local/default: SMTP
-# - Render default: SendGrid (HTTP API), unless overridden by EMAIL_PROVIDER
-EMAIL_PROVIDER = env("EMAIL_PROVIDER", default="sendgrid" if is_render else "smtp").lower()
-SENDGRID_API_KEY = env("SENDGRID_API_KEY", default="")
-SENDGRID_FROM_EMAIL = env("SENDGRID_FROM_EMAIL", default=DEFAULT_FROM_EMAIL)
+# - Render default: Resend (HTTP API), unless overridden by EMAIL_PROVIDER
+EMAIL_PROVIDER = env("EMAIL_PROVIDER", default="resend" if is_render else "smtp").lower()
+RESEND_API_KEY = env("RESEND_API_KEY", default="")
+RESEND_FROM_EMAIL = env("RESEND_FROM_EMAIL", default=DEFAULT_FROM_EMAIL)
 
 if not DEBUG:
     SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")

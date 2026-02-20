@@ -15,41 +15,30 @@ class InvoiceEmailError(Exception):
     """Raised when invoice email delivery fails."""
 
 
-def _send_via_sendgrid(invoice, pdf_bytes):
-    api_key = settings.SENDGRID_API_KEY
+def _send_via_resend(invoice, pdf_bytes):
+    api_key = settings.RESEND_API_KEY
     if not api_key:
-        raise InvoiceEmailError("SendGrid is enabled but SENDGRID_API_KEY is missing.")
+        raise InvoiceEmailError("Resend is enabled but RESEND_API_KEY is missing.")
 
-    from_email = settings.SENDGRID_FROM_EMAIL or settings.DEFAULT_FROM_EMAIL
+    from_email = settings.RESEND_FROM_EMAIL or settings.DEFAULT_FROM_EMAIL
     if not from_email:
-        raise InvoiceEmailError("SENDGRID_FROM_EMAIL or DEFAULT_FROM_EMAIL must be configured.")
+        raise InvoiceEmailError("RESEND_FROM_EMAIL or DEFAULT_FROM_EMAIL must be configured.")
 
     payload = {
-        "from": {"email": from_email},
-        "personalizations": [
-            {
-                "to": [{"email": invoice.client_email}],
-                "subject": f"Invoice {invoice.invoice_number}",
-            }
-        ],
-        "content": [
-            {
-                "type": "text/plain",
-                "value": f"Dear {invoice.client_name},\n\nPlease find your invoice attached.",
-            }
-        ],
+        "from": from_email,
+        "to": [invoice.client_email],
+        "subject": f"Invoice {invoice.invoice_number}",
+        "text": f"Dear {invoice.client_name},\n\nPlease find your invoice attached.",
         "attachments": [
             {
-                "content": base64.b64encode(pdf_bytes).decode("ascii"),
-                "type": "application/pdf",
                 "filename": f"{invoice.invoice_number}.pdf",
-                "disposition": "attachment",
+                "content": base64.b64encode(pdf_bytes).decode("ascii"),
             }
         ],
     }
 
     req = urlrequest.Request(
-        "https://api.sendgrid.com/v3/mail/send",
+        "https://api.resend.com/emails",
         data=json.dumps(payload).encode("utf-8"),
         headers={
             "Authorization": f"Bearer {api_key}",
@@ -62,12 +51,12 @@ def _send_via_sendgrid(invoice, pdf_bytes):
         with urlrequest.urlopen(req, timeout=settings.EMAIL_TIMEOUT) as resp:
             if resp.status >= 400:
                 body = resp.read().decode("utf-8", errors="ignore")
-                raise InvoiceEmailError(f"SendGrid API error {resp.status}: {body}")
+                raise InvoiceEmailError(f"Resend API error {resp.status}: {body}")
     except urlerror.HTTPError as exc:
         body = exc.read().decode("utf-8", errors="ignore")
-        raise InvoiceEmailError(f"SendGrid API error {exc.code}: {body}") from exc
+        raise InvoiceEmailError(f"Resend API error {exc.code}: {body}") from exc
     except (urlerror.URLError, TimeoutError, OSError) as exc:
-        raise InvoiceEmailError(f"SendGrid request failed: {exc}") from exc
+        raise InvoiceEmailError(f"Resend request failed: {exc}") from exc
 
 
 def _send_via_smtp(invoice, pdf_bytes):
@@ -95,7 +84,7 @@ def send_invoice_email(invoice):
     pdf_bytes = pdf.read()
 
     provider = getattr(settings, "EMAIL_PROVIDER", "smtp").lower()
-    if provider == "sendgrid":
-        _send_via_sendgrid(invoice, pdf_bytes)
+    if provider == "resend":
+        _send_via_resend(invoice, pdf_bytes)
     else:
         _send_via_smtp(invoice, pdf_bytes)
