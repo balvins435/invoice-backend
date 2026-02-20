@@ -1,3 +1,4 @@
+import logging
 import smtplib
 
 from rest_framework import viewsets, permissions, status
@@ -11,7 +12,9 @@ from .permissions import IsBusinessOwner
 from django.http import FileResponse
 from .utils import generate_invoice_pdf
 
-from .email_utils import send_invoice_email
+from .email_utils import InvoiceEmailError, send_invoice_email
+
+logger = logging.getLogger(__name__)
 
 
 
@@ -59,9 +62,14 @@ class InvoiceViewSet(viewsets.ModelViewSet):
                 {'error': f'Email delivery failed: {exc}'},
                 status=status.HTTP_502_BAD_GATEWAY
             )
+        except InvoiceEmailError as exc:
+            logger.warning("Invoice email delivery failed for invoice=%s: %s", invoice.id, exc)
+            return Response(
+                {'error': f'Email delivery failed: {exc}'},
+                status=status.HTTP_502_BAD_GATEWAY
+            )
 
         invoice.status = 'sent'
         invoice.save()
 
         return Response({'status': 'Invoice sent'})
-
