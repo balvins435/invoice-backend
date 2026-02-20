@@ -1,7 +1,12 @@
 import smtplib
+import base64
+import json
 from socket import timeout as socket_timeout
+from urllib import error as urlerror
+from urllib import request as urlrequest
 
 from django.core.mail import EmailMessage, get_connection
+from django.conf import settings
 
 from .utils import generate_invoice_pdf
 
@@ -10,9 +15,62 @@ class InvoiceEmailError(Exception):
     """Raised when invoice email delivery fails."""
 
 
-def send_invoice_email(invoice):
-    pdf = generate_invoice_pdf(invoice)
+def _send_via_sendgrid(invoice, pdf_bytes):
+    api_key = settings.SENDGRID_API_KEY
+    if not api_key:
+        raise InvoiceEmailError("SendGrid is enabled but SENDGRID_API_KEY is missing.")
 
+    from_email = settings.SENDGRID_FROM_EMAIL or settings.DEFAULT_FROM_EMAIL
+    if not from_email:
+        raise InvoiceEmailError("SENDGRID_FROM_EMAIL or DEFAULT_FROM_EMAIL must be configured.")
+
+    payload = {
+        "from": {"email": from_email},
+        "personalizations": [
+            {
+                "to": [{"email": invoice.client_email}],
+                "subject": f"Invoice {invoice.invoice_number}",
+            }
+        ],
+        "content": [
+            {
+                "type": "text/plain",
+                "value": f"Dear {invoice.client_name},\n\nPlease find your invoice attached.",
+            }
+        ],
+        "attachments": [
+            {
+                "content": base64.b64encode(pdf_bytes).decode("ascii"),
+                "type": "application/pdf",
+                "filename": f"{invoice.invoice_number}.pdf",
+                "disposition": "attachment",
+            }
+        ],
+    }
+
+    req = urlrequest.Request(
+        "https://api.sendgrid.com/v3/mail/send",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+
+    try:
+        with urlrequest.urlopen(req, timeout=settings.EMAIL_TIMEOUT) as resp:
+            if resp.status >= 400:
+                body = resp.read().decode("utf-8", errors="ignore")
+                raise InvoiceEmailError(f"SendGrid API error {resp.status}: {body}")
+    except urlerror.HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="ignore")
+        raise InvoiceEmailError(f"SendGrid API error {exc.code}: {body}") from exc
+    except (urlerror.URLError, TimeoutError, OSError) as exc:
+        raise InvoiceEmailError(f"SendGrid request failed: {exc}") from exc
+
+
+def _send_via_smtp(invoice, pdf_bytes):
     email = EmailMessage(
         subject=f"Invoice {invoice.invoice_number}",
         body=f"Dear {invoice.client_name},\n\nPlease find your invoice attached.",
@@ -22,7 +80,7 @@ def send_invoice_email(invoice):
 
     email.attach(
         f"{invoice.invoice_number}.pdf",
-        pdf.read(),
+        pdf_bytes,
         "application/pdf",
     )
 
@@ -30,3 +88,14 @@ def send_invoice_email(invoice):
         email.send(fail_silently=False)
     except (smtplib.SMTPException, socket_timeout, TimeoutError, OSError) as exc:
         raise InvoiceEmailError(str(exc)) from exc
+
+
+def send_invoice_email(invoice):
+    pdf = generate_invoice_pdf(invoice)
+    pdf_bytes = pdf.read()
+
+    provider = getattr(settings, "EMAIL_PROVIDER", "smtp").lower()
+    if provider == "sendgrid":
+        _send_via_sendgrid(invoice, pdf_bytes)
+    else:
+        _send_via_smtp(invoice, pdf_bytes)
