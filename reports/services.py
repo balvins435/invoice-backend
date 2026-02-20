@@ -16,7 +16,7 @@ def _to_number(value):
 def monthly_report(business, month, year):
     invoices = Invoice.objects.filter(
         business=business,
-        status='paid',
+        status__in=['sent', 'paid'],
         issue_date__month=month,
         issue_date__year=year
     )
@@ -58,7 +58,7 @@ def monthly_reports_for_year(business, year):
 def tax_summary(business, year, month=None):
     invoice_qs = Invoice.objects.filter(
         business=business,
-        status='paid',
+        status__in=['sent', 'paid'],
         issue_date__year=year
     )
     expense_qs = Expense.objects.filter(

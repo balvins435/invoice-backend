@@ -86,11 +86,11 @@ class DashboardStatsAPIView(APIView):
                 }
             )
 
-        paid_invoices = Invoice.objects.filter(business=business, status='paid')
+        income_invoices = Invoice.objects.filter(business=business, status__in=['sent', 'paid'])
         all_invoices = Invoice.objects.filter(business=business)
         expenses = Expense.objects.filter(business=business)
 
-        total_income = paid_invoices.aggregate(total=Sum('total_amount'))['total'] or 0
+        total_income = income_invoices.aggregate(total=Sum('total_amount'))['total'] or 0
         total_expenses = expenses.aggregate(total=Sum('total_amount'))['total'] or 0
 
         return Response(
