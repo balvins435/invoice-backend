@@ -4,9 +4,11 @@ from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 from business.models import Business
 from .services import monthly_report, monthly_reports_for_year, tax_summary
+from .utils import generate_report_pdf
 from invoice.models import Invoice
 from expenses.models import Expense
 from django.db.models import Sum
+from django.http import FileResponse
 
 
 class MonthlyReportAPIView(APIView):
@@ -105,3 +107,31 @@ class DashboardStatsAPIView(APIView):
                 "monthly_trends": [],
             }
         )
+
+
+class ReportPDFAPIView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def _resolve_business(self, request):
+        business_id = request.query_params.get('business') or request.query_params.get('business_id')
+        queryset = Business.objects.filter(owner=request.user)
+        if business_id:
+            return queryset.filter(id=business_id).first()
+        return queryset.order_by('id').first()
+
+    def get(self, request):
+        business = self._resolve_business(request)
+        year = int(request.query_params.get('year') or datetime.utcnow().year)
+        month = request.query_params.get('month')
+
+        if not business:
+            return Response({"error": "No business found for this user"}, status=400)
+
+        pdf_buffer = generate_report_pdf(
+            business=business,
+            year=year,
+            month=int(month) if month else None
+        )
+
+        filename = f"report-{year}{f'-{int(month):02d}' if month else ''}.pdf"
+        return FileResponse(pdf_buffer, as_attachment=True, filename=filename)
