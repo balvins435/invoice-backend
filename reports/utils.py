@@ -95,6 +95,16 @@ def generate_report_pdf(business, year, month=None):
     )
     styles.add(
         ParagraphStyle(
+            name="HeaderTitle",
+            parent=styles["Title"],
+            fontName="Helvetica-Bold",
+            fontSize=20,
+            textColor=colors.white,
+            leading=24,
+        )
+    )
+    styles.add(
+        ParagraphStyle(
             name="ReportSubtitle",
             parent=styles["Normal"],
             fontName="Helvetica",
@@ -152,7 +162,7 @@ def generate_report_pdf(business, year, month=None):
 
     header = Table(
         [[
-            Paragraph("Financial Reports", styles["ReportTitle"]),
+            Paragraph("Financial Summary Report", styles["HeaderTitle"]),
             _build_business_header(business, styles),
         ]],
         colWidths=[102 * mm, 68 * mm],
