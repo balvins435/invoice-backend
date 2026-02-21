@@ -6,13 +6,69 @@ from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
-from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+from reportlab.platypus import Image, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
 from .services import monthly_report, monthly_reports_for_year, tax_summary
 
 
 def _format_amount(value):
     return f"KES {value:,.2f}"
+
+
+def _build_business_header(business, styles):
+    logo_flowable = None
+    if business.logo:
+        try:
+            logo_flowable = Image(business.logo.path)
+            logo_flowable.drawHeight = 12 * mm
+            logo_flowable.drawWidth = 12 * mm
+            logo_flowable.hAlign = "LEFT"
+        except Exception:
+            logo_flowable = None
+
+    address_lines = [
+        business.address.replace("\n", "<br/>"),
+        business.email,
+        business.phone,
+    ]
+    address_html = "<br/>".join([line for line in address_lines if line])
+    info = Paragraph(address_html, styles["HeaderInfo"])
+
+    if logo_flowable:
+        header_table = Table([[logo_flowable, info]], colWidths=[14 * mm, 52 * mm])
+        header_table.setStyle(
+            TableStyle(
+                [
+                    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 0),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+                    ("TOPPADDING", (0, 0), (-1, -1), 0),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+                ]
+            )
+        )
+        return header_table
+
+    return info
+
+
+def _kpi_card(title, value, accent, soft_bg, styles):
+    label = Paragraph(f"<font color='{accent}' size='8'><b>{title}</b></font>", styles["KpiLabel"])
+    amount = Paragraph(f"<font color='#0F172A' size='12'><b>{value}</b></font>", styles["KpiValue"])
+    card = Table([[label], [amount]], colWidths=[70 * mm])
+    card.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor(soft_bg)),
+                ("BOX", (0, 0), (-1, -1), 0.6, colors.HexColor(accent)),
+                ("LEFTPADDING", (0, 0), (-1, -1), 10),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 10),
+                ("TOPPADDING", (0, 0), (-1, -1), 8),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
+            ]
+        )
+    )
+    return card
 
 
 def generate_report_pdf(business, year, month=None):
@@ -39,6 +95,26 @@ def generate_report_pdf(business, year, month=None):
     )
     styles.add(
         ParagraphStyle(
+            name="ReportSubtitle",
+            parent=styles["Normal"],
+            fontName="Helvetica",
+            fontSize=10,
+            textColor=colors.HexColor("#94A3B8"),
+            leading=14,
+        )
+    )
+    styles.add(
+        ParagraphStyle(
+            name="HeaderInfo",
+            parent=styles["Normal"],
+            fontName="Helvetica",
+            fontSize=8,
+            textColor=colors.HexColor("#E2E8F0"),
+            leading=11,
+        )
+    )
+    styles.add(
+        ParagraphStyle(
             name="SectionTitle",
             parent=styles["Normal"],
             fontName="Helvetica-Bold",
@@ -55,15 +131,52 @@ def generate_report_pdf(business, year, month=None):
             textColor=colors.HexColor("#64748B"),
         )
     )
+    styles.add(
+        ParagraphStyle(
+            name="KpiLabel",
+            parent=styles["Normal"],
+            fontName="Helvetica-Bold",
+            fontSize=8,
+        )
+    )
+    styles.add(
+        ParagraphStyle(
+            name="KpiValue",
+            parent=styles["Normal"],
+            fontName="Helvetica-Bold",
+            fontSize=12,
+        )
+    )
 
     period_label = f"{month_name[int(month)]} {year}" if month else f"{year} Summary"
 
+    header = Table(
+        [[
+            Paragraph("Financial Reports", styles["ReportTitle"]),
+            _build_business_header(business, styles),
+        ]],
+        colWidths=[102 * mm, 68 * mm],
+    )
+    header.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#0F172A")),
+                ("TEXTCOLOR", (0, 0), (-1, -1), colors.white),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 14),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 14),
+                ("TOPPADDING", (0, 0), (-1, -1), 12),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 12),
+            ]
+        )
+    )
+
     story = [
-        Paragraph("Financial Report", styles["ReportTitle"]),
-        Paragraph(business.name, styles["MetaText"]),
+        header,
+        Spacer(1, 6 * mm),
         Paragraph(f"Period: {period_label}", styles["MetaText"]),
         Paragraph(f"Generated: {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}", styles["MetaText"]),
-        Spacer(1, 8 * mm),
+        Spacer(1, 6 * mm),
     ]
 
     if month:
@@ -81,36 +194,32 @@ def generate_report_pdf(business, year, month=None):
             "expense_count": sum(r["expense_count"] for r in reports),
         }
 
-    summary_rows = [
-        ["Total Income", _format_amount(totals["total_income"])],
-        ["Total Expenses", _format_amount(totals["total_expenses"])],
-        ["Net Profit", _format_amount(totals["net_profit"])],
-        ["Tax Owed", _format_amount(totals["tax_owed"])],
-        ["Deductible Expenses", _format_amount(totals["deductible_expenses"])],
-        ["Invoices", str(totals["invoice_count"])],
-        ["Expenses", str(totals["expense_count"])],
-    ]
-
     story.append(Paragraph("Summary", styles["SectionTitle"]))
     story.append(Spacer(1, 2 * mm))
-    summary_table = Table(summary_rows, colWidths=[58 * mm, 50 * mm])
-    summary_table.setStyle(
+    income_card = _kpi_card("Total Income", _format_amount(totals["total_income"]), "#10B981", "#ECFDF5", styles)
+    expense_card = _kpi_card("Total Expenses", _format_amount(totals["total_expenses"]), "#EF4444", "#FEF2F2", styles)
+    profit_card = _kpi_card("Net Profit", _format_amount(totals["net_profit"]), "#2563EB", "#EFF6FF", styles)
+    tax_card = _kpi_card("Tax Owed", _format_amount(totals["tax_owed"]), "#F59E0B", "#FFFBEB", styles)
+
+    kpi_grid = Table(
+        [[income_card, expense_card], [profit_card, tax_card]],
+        colWidths=[80 * mm, 80 * mm],
+        rowHeights=[24 * mm, 24 * mm],
+    )
+    kpi_grid.setStyle(
         TableStyle(
             [
-                ("TEXTCOLOR", (0, 0), (-1, -1), colors.HexColor("#0F172A")),
-                ("FONTNAME", (0, 0), (-1, -1), "Helvetica"),
-                ("FONTSIZE", (0, 0), (-1, -1), 9),
-                ("LEFTPADDING", (0, 0), (-1, -1), 6),
-                ("RIGHTPADDING", (0, 0), (-1, -1), 6),
-                ("TOPPADDING", (0, 0), (-1, -1), 6),
-                ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
-                ("ROWBACKGROUNDS", (0, 0), (-1, -1), [colors.white, colors.HexColor("#F8FAFC")]),
-                ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#E2E8F0")),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 0),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+                ("TOPPADDING", (0, 0), (-1, -1), 0),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+                ("INNERGRID", (0, 0), (-1, -1), 4, colors.white),
             ]
         )
     )
-    story.append(summary_table)
-    story.append(Spacer(1, 8 * mm))
+    story.append(kpi_grid)
+    story.append(Spacer(1, 7 * mm))
 
     tax = tax_summary(business=business, year=year, month=int(month) if month else None)
     tax_rows = [
