@@ -14,6 +14,14 @@ def generate_invoice_number(business):
     return f"INV-{last_number + 1:04d}"
 
 
+def generate_receipt_number():
+    last_receipt = Receipt.objects.order_by('-id').first()
+    if not last_receipt:
+        return "RCT-0001"
+    last_number = int(last_receipt.receipt_number.split('-')[-1])
+    return f"RCT-{last_number + 1:04d}"
+
+
 class Invoice(models.Model):
     STATUS_CHOICES = (
         ('draft', 'Draft'),
@@ -71,3 +79,40 @@ class InvoiceItem(models.Model):
 
     def __str__(self):
         return self.description
+
+
+class Receipt(models.Model):
+    PAYMENT_METHOD_CHOICES = (
+        ('cash', 'Cash'),
+        ('bank_transfer', 'Bank Transfer'),
+        ('mobile_money', 'Mobile Money'),
+        ('card', 'Card'),
+        ('other', 'Other'),
+    )
+
+    invoice = models.ForeignKey(
+        Invoice,
+        related_name='receipts',
+        on_delete=models.CASCADE
+    )
+    receipt_number = models.CharField(max_length=50, unique=True, editable=False)
+    payment_method = models.CharField(
+        max_length=30,
+        choices=PAYMENT_METHOD_CHOICES,
+        default='bank_transfer'
+    )
+    payment_date = models.DateField()
+    amount_paid = models.DecimalField(max_digits=10, decimal_places=2)
+    notes = models.TextField(blank=True, default='')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at']
+
+    def save(self, *args, **kwargs):
+        if not self.receipt_number:
+            self.receipt_number = generate_receipt_number()
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"{self.receipt_number} - {self.invoice.invoice_number}"

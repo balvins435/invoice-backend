@@ -4,13 +4,14 @@ import smtplib
 from rest_framework import viewsets, permissions, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
+from django.utils import timezone
 
-from .models import Invoice
+from .models import Invoice, Receipt
 from .serializers import InvoiceSerializer
 from .permissions import IsBusinessOwner
 
 from django.http import FileResponse
-from .utils import generate_invoice_pdf
+from .utils import generate_invoice_pdf, generate_receipt_pdf
 
 from .email_utils import InvoiceEmailError, send_invoice_email
 
@@ -25,13 +26,24 @@ class InvoiceViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         return Invoice.objects.filter(
             business__owner=self.request.user
-        )
+        ).prefetch_related('items', 'receipts')
 
     @action(detail=True, methods=['post'])
     def mark_paid(self, request, pk=None):
         invoice = self.get_object()
-        invoice.status = 'paid'
-        invoice.save()
+        if invoice.status != 'paid':
+            invoice.status = 'paid'
+            invoice.save(update_fields=['status'])
+
+        Receipt.objects.get_or_create(
+            invoice=invoice,
+            defaults={
+                'payment_method': 'bank_transfer',
+                'payment_date': timezone.localdate(),
+                'amount_paid': invoice.total_amount,
+                'notes': 'Auto-generated when invoice was marked as paid.',
+            },
+        )
         return Response({'status': 'Invoice marked as paid'})
     
 # pdf generation    
@@ -45,6 +57,32 @@ class InvoiceViewSet(viewsets.ModelViewSet):
             pdf_buffer,
             as_attachment=True,
             filename=f"{invoice.invoice_number}.pdf"
+        )
+
+    @action(detail=True, methods=['get'])
+    def receipt(self, request, pk=None):
+        invoice = self.get_object()
+        receipt = invoice.receipts.first()
+
+        if not receipt:
+            if invoice.status != 'paid':
+                return Response(
+                    {'error': 'Receipt is available only for paid invoices.'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            receipt = Receipt.objects.create(
+                invoice=invoice,
+                payment_method='bank_transfer',
+                payment_date=timezone.localdate(),
+                amount_paid=invoice.total_amount,
+                notes='Auto-generated for an already paid invoice.',
+            )
+
+        pdf_buffer = generate_receipt_pdf(receipt)
+        return FileResponse(
+            pdf_buffer,
+            as_attachment=True,
+            filename=f"{receipt.receipt_number}.pdf"
         )
     
     @action(detail=True, methods=['post'])

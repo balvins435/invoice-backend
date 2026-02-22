@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import Invoice, InvoiceItem, generate_invoice_number
+from .models import Invoice, InvoiceItem, Receipt, generate_invoice_number
 from business.models import Business
 from decimal import Decimal
 
@@ -9,8 +9,25 @@ class InvoiceItemSerializer(serializers.ModelSerializer):
         model = InvoiceItem
         fields = ['id', 'description', 'quantity', 'unit_price', 'total']
 
+
+class ReceiptSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Receipt
+        fields = [
+            'id',
+            'receipt_number',
+            'payment_method',
+            'payment_date',
+            'amount_paid',
+            'notes',
+            'created_at',
+        ]
+
+
 class InvoiceSerializer(serializers.ModelSerializer):
     items = InvoiceItemSerializer(many=True)
+    has_receipt = serializers.SerializerMethodField()
+    receipt_number = serializers.SerializerMethodField()
     business_id = serializers.PrimaryKeyRelatedField(
         queryset=Business.objects.all(),
         source='business'
@@ -31,6 +48,8 @@ class InvoiceSerializer(serializers.ModelSerializer):
             'total_amount',
             'status',
             'items',
+            'has_receipt',
+            'receipt_number',
             'created_at',
         ]
         read_only_fields = ['id', 'created_at']
@@ -94,3 +113,9 @@ class InvoiceSerializer(serializers.ModelSerializer):
 
         return data
 
+    def get_has_receipt(self, obj):
+        return obj.receipts.exists()
+
+    def get_receipt_number(self, obj):
+        receipt = obj.receipts.first()
+        return receipt.receipt_number if receipt else None

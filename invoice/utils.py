@@ -274,3 +274,161 @@ def generate_invoice_pdf(invoice):
 
     buffer.seek(0)
     return buffer
+
+
+def generate_receipt_pdf(receipt):
+    invoice = receipt.invoice
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=A4,
+        rightMargin=18 * mm,
+        leftMargin=18 * mm,
+        topMargin=16 * mm,
+        bottomMargin=16 * mm,
+    )
+
+    styles = getSampleStyleSheet()
+    styles.add(
+        ParagraphStyle(
+            name="ReceiptTitle",
+            parent=styles["Title"],
+            fontName="Helvetica-Bold",
+            fontSize=20,
+            textColor=colors.white,
+            leading=24,
+        )
+    )
+    styles.add(
+        ParagraphStyle(
+            name="ReceiptMeta",
+            parent=styles["Normal"],
+            fontName="Helvetica",
+            fontSize=10,
+            textColor=colors.HexColor("#DBEAFE"),
+            leading=13,
+        )
+    )
+    styles.add(
+        ParagraphStyle(
+            name="BodyLabel",
+            parent=styles["Normal"],
+            fontName="Helvetica-Bold",
+            fontSize=9,
+            textColor=colors.HexColor("#64748B"),
+        )
+    )
+    styles.add(
+        ParagraphStyle(
+            name="BodyValue",
+            parent=styles["Normal"],
+            fontName="Helvetica",
+            fontSize=11,
+            textColor=colors.HexColor("#0F172A"),
+            leading=14,
+        )
+    )
+
+    logo_flowable = None
+    if invoice.business.logo:
+        try:
+            logo_flowable = Image(invoice.business.logo.path)
+            logo_flowable.drawHeight = 14 * mm
+            logo_flowable.drawWidth = 14 * mm
+            logo_flowable.hAlign = "LEFT"
+        except Exception:
+            logo_flowable = None
+
+    brand = Paragraph(
+        f"{invoice.business.name}<br/><font size='11'>Receipt {receipt.receipt_number}</font>",
+        styles["ReceiptTitle"],
+    )
+    if logo_flowable:
+        brand_cell = Table([[logo_flowable, brand]], colWidths=[16 * mm, 96 * mm])
+        brand_cell.setStyle(TableStyle([
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("LEFTPADDING", (0, 0), (-1, -1), 0),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+            ("TOPPADDING", (0, 0), (-1, -1), 0),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+        ]))
+    else:
+        brand_cell = brand
+
+    header = Table(
+        [[
+            brand_cell,
+            Paragraph(
+                (
+                    f"<para align='right'>"
+                    f"<font name='Helvetica-Bold' size='11' color='#DBEAFE'>Payment Received</font><br/>"
+                    f"<font color='#BFDBFE'>Date: {receipt.payment_date}</font><br/>"
+                    f"<font color='#BFDBFE'>Invoice: {invoice.invoice_number}</font></para>"
+                ),
+                styles["ReceiptMeta"],
+            ),
+        ]],
+        colWidths=[112 * mm, 52 * mm],
+    )
+    header.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#0F172A")),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 16),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 16),
+        ("TOPPADDING", (0, 0), (-1, -1), 14),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 14),
+    ]))
+
+    payment_details = Table(
+        [
+            [Paragraph("Receipt Number", styles["BodyLabel"]), Paragraph(receipt.receipt_number, styles["BodyValue"])],
+            [Paragraph("Client", styles["BodyLabel"]), Paragraph(invoice.client_name, styles["BodyValue"])],
+            [Paragraph("Client Email", styles["BodyLabel"]), Paragraph(invoice.client_email, styles["BodyValue"])],
+            [Paragraph("Payment Method", styles["BodyLabel"]), Paragraph(receipt.get_payment_method_display(), styles["BodyValue"])],
+            [Paragraph("Payment Date", styles["BodyLabel"]), Paragraph(str(receipt.payment_date), styles["BodyValue"])],
+            [Paragraph("Amount Paid", styles["BodyLabel"]), Paragraph(f"KES {_format_amount(receipt.amount_paid)}", styles["BodyValue"])],
+            [Paragraph("For Invoice", styles["BodyLabel"]), Paragraph(invoice.invoice_number, styles["BodyValue"])],
+        ],
+        colWidths=[48 * mm, 116 * mm],
+    )
+    payment_details.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#F8FAFC")),
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#E2E8F0")),
+        ("LEFTPADDING", (0, 0), (-1, -1), 9),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 9),
+        ("TOPPADDING", (0, 0), (-1, -1), 7),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 7),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+    ]))
+
+    story = [
+        header,
+        Spacer(1, 8 * mm),
+        payment_details,
+    ]
+
+    if receipt.notes:
+        story.extend([
+            Spacer(1, 6 * mm),
+            Paragraph("Notes", styles["BodyLabel"]),
+            Spacer(1, 1.5 * mm),
+            Paragraph(receipt.notes, styles["BodyValue"]),
+        ])
+
+    story.extend([
+        Spacer(1, 8 * mm),
+        Paragraph(
+            "This receipt confirms full payment was received for the invoice listed above.",
+            ParagraphStyle(
+                "ReceiptFooter",
+                parent=styles["Normal"],
+                textColor=colors.HexColor("#475569"),
+                fontSize=9,
+                leading=12,
+            ),
+        ),
+    ])
+
+    doc.build(story)
+    buffer.seek(0)
+    return buffer
