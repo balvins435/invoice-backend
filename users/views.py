@@ -117,10 +117,9 @@ class PasswordResetRequestView(APIView):
                 )
             except Exception as exc:
                 logger.exception("Password reset email failed for %s: %s", email, exc)
-                return Response(
-                    {'detail': 'Failed to send reset email. Please try again later.'},
-                    status=status.HTTP_502_BAD_GATEWAY
-                )
+                # Keep response generic and successful to prevent account/email enumeration.
+                # Operational failures are logged for server-side troubleshooting.
+                pass
 
         return Response(
             {'detail': 'If an account with that email exists, a reset link has been sent.'},
