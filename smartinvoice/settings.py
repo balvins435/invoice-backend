@@ -78,6 +78,9 @@ INSTALLED_APPS = [
     "business",
     "expenses",
     "reports",
+    "payments",
+    "messaging",
+    "tax",
 ]
 
 MIDDLEWARE = [
@@ -275,6 +278,24 @@ DEFAULT_FROM_EMAIL = _default_from_email
 EMAIL_PROVIDER = env("EMAIL_PROVIDER", default="sendgrid" if is_render else "smtp").lower()
 SENDGRID_API_KEY = env("SENDGRID_API_KEY", default="")
 SENDGRID_FROM_EMAIL = env("SENDGRID_FROM_EMAIL", default=DEFAULT_FROM_EMAIL)
+
+BACKEND_BASE_URL = env("BACKEND_BASE_URL", default="http://localhost:8000")
+WHATSAPP_PROVIDER = env("WHATSAPP_PROVIDER", default="mock")
+WHATSAPP_LINK_TTL_SECONDS = env.int("WHATSAPP_LINK_TTL_SECONDS", default=7 * 24 * 60 * 60)
+TWILIO_ACCOUNT_SID = env("TWILIO_ACCOUNT_SID", default="")
+TWILIO_AUTH_TOKEN = env("TWILIO_AUTH_TOKEN", default="")
+TWILIO_WHATSAPP_FROM = env("TWILIO_WHATSAPP_FROM", default="")
+
+MPESA_CONSUMER_KEY = env("MPESA_CONSUMER_KEY", default="")
+MPESA_CONSUMER_SECRET = env("MPESA_CONSUMER_SECRET", default="")
+MPESA_SHORTCODE = env("MPESA_SHORTCODE", default="")
+MPESA_PASSKEY = env("MPESA_PASSKEY", default="")
+MPESA_CALLBACK_URL = env("MPESA_CALLBACK_URL", default="")
+MPESA_BASE_URL = env("MPESA_BASE_URL", default="https://sandbox.safaricom.co.ke")
+
+ETIMS_API_URL = env("ETIMS_API_URL", default="")
+ETIMS_API_KEY = env("ETIMS_API_KEY", default="")
+ETIMS_TIMEOUT = env.int("ETIMS_TIMEOUT", default=20)
 
 if not DEBUG:
     SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")

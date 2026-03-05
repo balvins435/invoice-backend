@@ -34,7 +34,9 @@ urlpatterns = [
     path('api/business/', include('business.urls')),
     path('api/invoice/', include('invoice.urls')),
     path('api/expenses/', include('expenses.urls')),
-# #     path('api/payments/', include('payments.urls')),
+    path('api/payments/', include('payments.urls')),
+    path('api/messaging/', include('messaging.urls')),
+    path('api/tax/', include('tax.urls')),
     path('api/reports/', include('reports.urls')),
 ]
 

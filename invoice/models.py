@@ -49,6 +49,8 @@ class Invoice(models.Model):
     subtotal = models.DecimalField(max_digits=10, decimal_places=2)
     tax_amount = models.DecimalField(max_digits=10, decimal_places=2)
     total_amount = models.DecimalField(max_digits=10, decimal_places=2)
+    tax_invoice_number = models.CharField(max_length=120, blank=True, default='')
+    etims_synced_at = models.DateTimeField(null=True, blank=True)
 
     status = models.CharField(
         max_length=10,
