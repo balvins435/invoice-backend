@@ -117,6 +117,8 @@ class MpesaCallbackAPIView(APIView):
 
         receipt_number = payload.get("mpesa_receipt_number", "")
         metadata = stk_callback.get("CallbackMetadata", {}).get("Item", [])
+        if not isinstance(metadata, list):
+            metadata = []
         for item in metadata:
             if item.get("Name") == "MpesaReceiptNumber":
                 receipt_number = item.get("Value", "")
