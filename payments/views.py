@@ -60,12 +60,16 @@ class PaymentTransactionViewSet(viewsets.ReadOnlyModelViewSet):
             amount=serializer.validated_data.get("amount"),
         )
 
+        response_status = status.HTTP_201_CREATED
+        if transaction.status == PaymentTransaction.STATUS_FAILED:
+            response_status = status.HTTP_502_BAD_GATEWAY
+
         return Response(
             {
                 "transaction": PaymentTransactionSerializer(transaction).data,
                 "provider_response": provider_response,
             },
-            status=status.HTTP_201_CREATED,
+            status=response_status,
         )
 
     @action(detail=True, methods=["post"], url_path="confirm")
@@ -98,7 +102,7 @@ class MpesaCallbackAPIView(APIView):
         checkout_request_id = stk_callback.get("CheckoutRequestID") or payload.get("checkout_request_id")
 
         if not checkout_request_id:
-            return Response({"error": "CheckoutRequestID is required."}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"ResultCode": 0, "ResultDesc": "Accepted"}, status=status.HTTP_200_OK)
 
         transaction = PaymentTransaction.objects.filter(
             checkout_request_id=checkout_request_id

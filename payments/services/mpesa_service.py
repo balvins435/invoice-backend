@@ -3,8 +3,9 @@ import json
 import logging
 from datetime import datetime
 from decimal import Decimal
-from urllib import error, parse, request
+from urllib import error, request
 
+import phonenumbers
 from django.conf import settings
 from django.db import transaction as db_transaction
 from django.utils import timezone
@@ -25,6 +26,7 @@ class MpesaService:
         self.passkey = getattr(settings, "MPESA_PASSKEY", "")
         self.callback_url = getattr(settings, "MPESA_CALLBACK_URL", "")
         self.base_url = getattr(settings, "MPESA_BASE_URL", "https://sandbox.safaricom.co.ke")
+        self.transaction_type = getattr(settings, "MPESA_TRANSACTION_TYPE", "CustomerPayBillOnline")
 
     def _is_live_configured(self):
         return all([
@@ -35,6 +37,21 @@ class MpesaService:
             self.callback_url,
             self.base_url,
         ])
+
+    @staticmethod
+    def normalize_msisdn(phone_number):
+        try:
+            parsed = phonenumbers.parse(phone_number, "KE")
+        except phonenumbers.NumberParseException as exc:
+            raise ValueError("Invalid phone number.") from exc
+        if not phonenumbers.is_possible_number(parsed) or not phonenumbers.is_valid_number(parsed):
+            raise ValueError("Invalid phone number.")
+
+        e164 = phonenumbers.format_number(parsed, phonenumbers.PhoneNumberFormat.E164)
+        if not e164.startswith("+254"):
+            raise ValueError("Only Kenyan phone numbers are supported for M-Pesa.")
+
+        return e164[1:]  # Daraja expects 2547XXXXXXXX format.
 
     def _request_access_token(self):
         credentials = f"{self.consumer_key}:{self.consumer_secret}".encode("utf-8")
@@ -50,7 +67,10 @@ class MpesaService:
         with request.urlopen(req, timeout=15) as response:
             payload = json.loads(response.read().decode("utf-8"))
 
-        return payload.get("access_token", "")
+        access_token = payload.get("access_token", "")
+        if not access_token:
+            raise ValueError("Unable to retrieve M-Pesa access token.")
+        return access_token
 
     def _build_password(self, timestamp):
         return base64.b64encode(f"{self.shortcode}{self.passkey}{timestamp}".encode("utf-8")).decode("utf-8")
@@ -67,10 +87,14 @@ class MpesaService:
 
     def initiate_stk_push(self, invoice, phone_number, amount=None):
         amount_value = Decimal(amount if amount is not None else invoice.total_amount)
+        if amount_value <= 0:
+            raise ValueError("Amount must be greater than zero.")
+
+        msisdn = self.normalize_msisdn(phone_number)
         transaction = PaymentTransaction.objects.create(
             business=invoice.business,
             invoice=invoice,
-            phone_number=phone_number,
+            phone_number=msisdn,
             amount=amount_value,
             status=PaymentTransaction.STATUS_PENDING,
         )
@@ -78,7 +102,7 @@ class MpesaService:
         request_payload = {
             "invoice_id": invoice.id,
             "invoice_number": invoice.invoice_number,
-            "phone_number": phone_number,
+            "phone_number": msisdn,
             "amount": str(amount_value),
         }
 
@@ -106,14 +130,14 @@ class MpesaService:
             "BusinessShortCode": self.shortcode,
             "Password": self._build_password(timestamp),
             "Timestamp": timestamp,
-            "TransactionType": "CustomerPayBillOnline",
+            "TransactionType": self.transaction_type,
             "Amount": int(amount_value),
-            "PartyA": phone_number,
+            "PartyA": msisdn,
             "PartyB": self.shortcode,
-            "PhoneNumber": phone_number,
+            "PhoneNumber": msisdn,
             "CallBackURL": self.callback_url,
-            "AccountReference": invoice.invoice_number,
-            "TransactionDesc": f"Payment for invoice {invoice.invoice_number}",
+            "AccountReference": invoice.invoice_number[:12],
+            "TransactionDesc": f"INV {invoice.invoice_number}"[:13],
         }
 
         transaction.raw_request = payload
@@ -131,10 +155,12 @@ class MpesaService:
             transaction.merchant_request_id = response_payload.get("MerchantRequestID", "")
             transaction.result_code = response_payload.get("ResponseCode", "")
             transaction.result_description = response_payload.get("ResponseDescription", "")
+            if str(transaction.result_code) != "0":
+                transaction.status = PaymentTransaction.STATUS_FAILED
             transaction.save()
             return transaction, response_payload
 
-        except (error.URLError, error.HTTPError, TimeoutError, json.JSONDecodeError) as exc:
+        except (ValueError, error.URLError, error.HTTPError, TimeoutError, json.JSONDecodeError) as exc:
             logger.exception("STK push request failed for invoice=%s", invoice.id)
             transaction.status = PaymentTransaction.STATUS_FAILED
             transaction.result_description = f"Failed to initiate STK push: {exc}"
@@ -156,6 +182,11 @@ class MpesaService:
         callback_payload = callback_payload or {}
 
         with db_transaction.atomic():
+            if transaction.status == PaymentTransaction.STATUS_COMPLETED and success:
+                transaction.callback_payload = callback_payload
+                transaction.save(update_fields=["callback_payload", "updated_at"])
+                return transaction
+
             transaction.callback_payload = callback_payload
             transaction.result_code = str(result_code)
             transaction.result_description = result_description or ""

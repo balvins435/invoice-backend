@@ -292,6 +292,7 @@ MPESA_SHORTCODE = env("MPESA_SHORTCODE", default="")
 MPESA_PASSKEY = env("MPESA_PASSKEY", default="")
 MPESA_CALLBACK_URL = env("MPESA_CALLBACK_URL", default="")
 MPESA_BASE_URL = env("MPESA_BASE_URL", default="https://sandbox.safaricom.co.ke")
+MPESA_TRANSACTION_TYPE = env("MPESA_TRANSACTION_TYPE", default="CustomerPayBillOnline")
 
 ETIMS_API_URL = env("ETIMS_API_URL", default="")
 ETIMS_API_KEY = env("ETIMS_API_KEY", default="")

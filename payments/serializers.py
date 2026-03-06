@@ -1,6 +1,7 @@
 from rest_framework import serializers
 
 from .models import PaymentTransaction
+from .services.mpesa_service import MpesaService
 
 
 class PaymentTransactionSerializer(serializers.ModelSerializer):
@@ -37,6 +38,17 @@ class STKPushRequestSerializer(serializers.Serializer):
     invoice_id = serializers.IntegerField()
     phone_number = serializers.CharField(max_length=20)
     amount = serializers.DecimalField(max_digits=10, decimal_places=2, required=False)
+
+    def validate_phone_number(self, value):
+        try:
+            return MpesaService.normalize_msisdn(value)
+        except ValueError as exc:
+            raise serializers.ValidationError(str(exc)) from exc
+
+    def validate_amount(self, value):
+        if value <= 0:
+            raise serializers.ValidationError("Amount must be greater than zero.")
+        return value
 
 
 class ManualConfirmationSerializer(serializers.Serializer):
