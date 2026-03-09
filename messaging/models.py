@@ -2,6 +2,14 @@ from django.db import models
 
 
 class WhatsAppMessage(models.Model):
+    TYPE_MANUAL_INVOICE = "manual_invoice"
+    TYPE_AUTO_PAID = "auto_paid"
+
+    MESSAGE_TYPE_CHOICES = (
+        (TYPE_MANUAL_INVOICE, "Manual Invoice"),
+        (TYPE_AUTO_PAID, "Auto Paid Notification"),
+    )
+
     STATUS_PENDING = "pending"
     STATUS_SENT = "sent"
     STATUS_FAILED = "failed"
@@ -26,6 +34,19 @@ class WhatsAppMessage(models.Model):
     phone_number = models.CharField(max_length=20)
     message_text = models.TextField()
     invoice_link = models.URLField()
+    message_type = models.CharField(
+        max_length=30,
+        choices=MESSAGE_TYPE_CHOICES,
+        default=TYPE_MANUAL_INVOICE,
+    )
+    idempotency_key = models.CharField(
+        max_length=120,
+        unique=True,
+        blank=True,
+        null=True,
+        default=None,
+    )
+    attempt_count = models.PositiveIntegerField(default=0)
 
     delivery_status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_PENDING)
     provider_message_id = models.CharField(max_length=120, blank=True, default="")
@@ -38,7 +59,10 @@ class WhatsAppMessage(models.Model):
 
     class Meta:
         ordering = ["-created_at"]
-        indexes = [models.Index(fields=["delivery_status"])]
+        indexes = [
+            models.Index(fields=["delivery_status"]),
+            models.Index(fields=["message_type"]),
+        ]
 
     def __str__(self):
         return f"WhatsApp {self.invoice.invoice_number} -> {self.phone_number}"

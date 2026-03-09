@@ -10,6 +10,7 @@ from django.utils import timezone
 
 from invoice.models import Invoice
 from messaging.models import WhatsAppMessage
+from payments.models import PaymentTransaction
 
 logger = logging.getLogger(__name__)
 
@@ -84,8 +85,16 @@ class WhatsAppService:
             phone_number=phone_number,
             invoice_link=invoice_link,
             message_text=message_body,
+            message_type=WhatsAppMessage.TYPE_MANUAL_INVOICE,
             delivery_status=WhatsAppMessage.STATUS_PENDING,
         )
+        return self._dispatch_message(message, phone_number, message_body)
+
+    def _dispatch_message(self, message, phone_number, message_body):
+        message.attempt_count += 1
+        message.delivery_status = WhatsAppMessage.STATUS_PENDING
+        message.error_message = ""
+        message.save(update_fields=["attempt_count", "delivery_status", "error_message", "updated_at"])
 
         if self.provider == "twilio" and self.twilio_sid and self.twilio_token and self.twilio_from:
             try:
@@ -97,7 +106,7 @@ class WhatsAppService:
                 message.save()
                 return message
             except Exception as exc:  # pragma: no cover - network/provider dependent
-                logger.exception("Twilio WhatsApp send failed for invoice=%s", invoice.id)
+                logger.exception("Twilio WhatsApp send failed for invoice=%s", message.invoice_id)
                 message.delivery_status = WhatsAppMessage.STATUS_FAILED
                 message.error_message = str(exc)
                 message.provider_response = {"error": str(exc)}
@@ -116,3 +125,59 @@ class WhatsAppService:
             "updated_at",
         ])
         return message
+
+    @staticmethod
+    def _resolve_paid_invoice_phone(invoice):
+        tx = invoice.payment_transactions.filter(
+            status=PaymentTransaction.STATUS_COMPLETED
+        ).order_by("-paid_at", "-created_at").first()
+        return tx.phone_number if tx else ""
+
+    def send_paid_invoice_notification(self, invoice):
+        idempotency_key = f"paid-invoice-{invoice.id}"
+        phone_number = self._resolve_paid_invoice_phone(invoice)
+        invoice_link = self.build_invoice_link(invoice)
+        message_body = (
+            f"Payment received for invoice {invoice.invoice_number}. "
+            f"Thank you {invoice.client_name}. View your invoice here: {invoice_link}"
+        )
+
+        message, _ = WhatsAppMessage.objects.get_or_create(
+            idempotency_key=idempotency_key,
+            defaults={
+                "business": invoice.business,
+                "invoice": invoice,
+                "phone_number": phone_number,
+                "invoice_link": invoice_link,
+                "message_text": message_body,
+                "message_type": WhatsAppMessage.TYPE_AUTO_PAID,
+                "delivery_status": WhatsAppMessage.STATUS_PENDING,
+            },
+        )
+
+        if message.delivery_status == WhatsAppMessage.STATUS_SENT:
+            return message
+
+        if not phone_number:
+            message.delivery_status = WhatsAppMessage.STATUS_FAILED
+            message.error_message = (
+                "Auto-paid WhatsApp skipped: no completed payment phone number found."
+            )
+            message.provider_response = {"error": "missing_customer_phone"}
+            message.attempt_count += 1
+            message.save(update_fields=[
+                "delivery_status",
+                "error_message",
+                "provider_response",
+                "attempt_count",
+                "updated_at",
+            ])
+            return message
+
+        message.phone_number = phone_number
+        message.invoice_link = invoice_link
+        message.message_text = message_body
+        message.message_type = WhatsAppMessage.TYPE_AUTO_PAID
+        message.save(update_fields=["phone_number", "invoice_link", "message_text", "message_type", "updated_at"])
+
+        return self._dispatch_message(message, phone_number, message_body)

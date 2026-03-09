@@ -7,8 +7,10 @@ from .models import WhatsAppMessage
 class WhatsAppMessageAdmin(admin.ModelAdmin):
     list_display = (
         "invoice",
+        "message_type",
         "phone_number",
         "delivery_status",
+        "attempt_count",
         "provider_message_id",
         "sent_at",
         "created_at",
@@ -18,5 +20,5 @@ class WhatsAppMessageAdmin(admin.ModelAdmin):
         "phone_number",
         "provider_message_id",
     )
-    list_filter = ("delivery_status", "created_at")
+    list_filter = ("message_type", "delivery_status", "created_at")
     readonly_fields = ("created_at", "updated_at")
