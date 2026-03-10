@@ -3,6 +3,12 @@ from django.db import models
 
 
 class Business(models.Model):
+    LOGO_SHAPE_RECT = "rect"
+    LOGO_SHAPE_CIRCLE = "circle"
+    LOGO_SHAPE_CHOICES = (
+        (LOGO_SHAPE_RECT, "Rect"),
+        (LOGO_SHAPE_CIRCLE, "Circle"),
+    )
     owner = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.CASCADE,
@@ -13,6 +19,11 @@ class Business(models.Model):
     phone = models.CharField(max_length=20)
     address = models.TextField()
     logo = models.ImageField(upload_to='logos/', null=True, blank=True)
+    logo_shape = models.CharField(
+        max_length=12,
+        choices=LOGO_SHAPE_CHOICES,
+        default=LOGO_SHAPE_RECT,
+    )
     tax_rate = models.DecimalField(
         max_digits=5,
         decimal_places=2,

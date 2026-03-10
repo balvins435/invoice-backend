@@ -16,6 +16,7 @@ class BusinessSerializer(serializers.ModelSerializer):
             'phone',
             'address',
             'logo',
+            'logo_shape',
             'tax_rate',
             'created_at'
         ]
