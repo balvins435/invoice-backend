@@ -11,11 +11,19 @@ def create_user(
     *args: Any,
     **kwargs: Any,
 ) -> Dict[str, Any]:
+    request = kwargs.get("request")
+    if request:
+        request.session["social_auth_last_login_backend"] = backend.name
+
     if user:
+        if request:
+            request.session["social_auth_is_new_user"] = False
         return {"is_new": False}
 
     email = (details.get("email") or "").strip().lower()
     if not email:
+        if request:
+            request.session["social_auth_is_new_user"] = False
         return {}
 
     full_name = (
@@ -28,4 +36,6 @@ def create_user(
         full_name = email.split("@")[0]
 
     user = User.objects.create_user(email=email, full_name=full_name)
+    if request:
+        request.session["social_auth_is_new_user"] = True
     return {"user": user, "is_new": True}
