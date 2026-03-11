@@ -69,6 +69,7 @@ INSTALLED_APPS = [
     "rest_framework_simplejwt",
     "django_filters",
     "rest_framework_simplejwt.token_blacklist",
+    "social_django",
     "drf_yasg",
     "django_extensions",
     "django_celery_results",
@@ -156,6 +157,12 @@ else:
         }
 
 AUTH_USER_MODEL = "users.User"
+
+AUTHENTICATION_BACKENDS = (
+    "social_core.backends.google.GoogleOAuth2",
+    "social_core.backends.azuread.AzureADOAuth2",
+    "django.contrib.auth.backends.ModelBackend",
+)
 
 AUTH_PASSWORD_VALIDATORS = [
     {
@@ -250,6 +257,34 @@ if frontend_origin:
     _cleaned_csrf.append(frontend_origin)
 CSRF_TRUSTED_ORIGINS = _unique(
     [origin for origin in _cleaned_csrf if _is_valid_origin(origin)]
+)
+
+# Social Auth (Google & Microsoft)
+
+SOCIAL_AUTH_LOGIN_REDIRECT_URL = "/api/social/redirect/"
+SOCIAL_AUTH_LOGIN_ERROR_URL = "/api/social/error/"
+SOCIAL_AUTH_REDIRECT_IS_HTTPS = env.bool("SOCIAL_AUTH_REDIRECT_IS_HTTPS", default=not DEBUG)
+SOCIAL_AUTH_GOOGLE_OAUTH2_KEY = env("GOOGLE_CLIENT_ID", default="")
+SOCIAL_AUTH_GOOGLE_OAUTH2_SECRET = env("GOOGLE_CLIENT_SECRET", default="")
+SOCIAL_AUTH_GOOGLE_OAUTH2_SCOPE = ["email", "profile"]
+SOCIAL_AUTH_AZUREAD_OAUTH2_KEY = env("MICROSOFT_CLIENT_ID", default="")
+SOCIAL_AUTH_AZUREAD_OAUTH2_SECRET = env("MICROSOFT_CLIENT_SECRET", default="")
+SOCIAL_AUTH_AZUREAD_OAUTH2_TENANT_ID = env("MICROSOFT_TENANT_ID", default="common")
+SOCIAL_AUTH_AZUREAD_OAUTH2_SCOPE = ["openid", "email", "profile"]
+SOCIAL_AUTH_ALLOWED_REDIRECT_HOSTS = [
+    urlparse(FRONTEND_URL).hostname
+] if frontend_origin else []
+SOCIAL_AUTH_PIPELINE = (
+    "social_core.pipeline.social_auth.social_details",
+    "social_core.pipeline.social_auth.social_uid",
+    "social_core.pipeline.social_auth.auth_allowed",
+    "social_core.pipeline.social_auth.social_user",
+    "social_core.pipeline.user.get_username",
+    "social_core.pipeline.social_auth.associate_by_email",
+    "users.social_pipeline.create_user",
+    "social_core.pipeline.social_auth.associate_user",
+    "social_core.pipeline.social_auth.load_extra_data",
+    "social_core.pipeline.user.user_details",
 )
 
 CELERY_BROKER_URL = env("REDIS_URL", default="redis://localhost:6379/0")

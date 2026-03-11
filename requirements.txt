@@ -39,3 +39,4 @@ pytest
 pytest-django
 pytest-cov
 factory-boy
+social-auth-app-django

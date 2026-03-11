@@ -38,6 +38,7 @@ urlpatterns = [
     path('api/messaging/', include('messaging.urls')),
     path('api/tax/', include('tax.urls')),
     path('api/reports/', include('reports.urls')),
+    path('api/oauth/', include('social_django.urls', namespace='social')),
 ]
 
 if settings.DEBUG:
