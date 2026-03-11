@@ -12,7 +12,7 @@ from .views import (
     PasswordResetRequestView,
     PasswordResetConfirmView,
 )
-from .social_views import SocialAuthRedirectView, SocialAuthErrorView
+from .social_views import SocialAuthRedirectView, SocialAuthErrorView, SocialProvidersView
 
 urlpatterns = [
     path('register/', RegisterView.as_view()),
@@ -26,4 +26,5 @@ urlpatterns = [
     path('password-reset/confirm/', PasswordResetConfirmView.as_view()),
     path('social/redirect/', SocialAuthRedirectView.as_view()),
     path('social/error/', SocialAuthErrorView.as_view()),
+    path('social/providers/', SocialProvidersView.as_view()),
 ]
