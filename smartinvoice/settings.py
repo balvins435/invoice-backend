@@ -192,6 +192,21 @@ STATICFILES_DIRS = [BASE_DIR / "static"] if (BASE_DIR / "static").exists() else 
 MEDIA_URL = "/media/"
 MEDIA_ROOT = BASE_DIR / "media"
 
+# Cloudinary (optional) for media storage in production.
+CLOUDINARY_URL = env("CLOUDINARY_URL", default="")
+if CLOUDINARY_URL:
+    CLOUDINARY_STORAGE = {
+        "CLOUDINARY_URL": CLOUDINARY_URL,
+    }
+    STORAGES = {
+        "default": {
+            "BACKEND": "cloudinary_storage.storage.MediaCloudinaryStorage",
+        },
+        "staticfiles": {
+            "BACKEND": "whitenoise.storage.CompressedManifestStaticFilesStorage",
+        },
+    }
+
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 REST_FRAMEWORK = {
