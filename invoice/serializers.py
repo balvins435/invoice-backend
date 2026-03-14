@@ -1,6 +1,7 @@
 from decimal import Decimal
 
 from rest_framework import serializers
+from django.db.models import Sum
 
 from business.models import Business
 
@@ -32,6 +33,8 @@ class InvoiceSerializer(serializers.ModelSerializer):
     items = InvoiceItemSerializer(many=True)
     has_receipt = serializers.SerializerMethodField()
     receipt_number = serializers.SerializerMethodField()
+    amount_paid = serializers.SerializerMethodField()
+    balance_due = serializers.SerializerMethodField()
     business_id = serializers.PrimaryKeyRelatedField(queryset=Business.objects.all(), source="business")
 
     class Meta:
@@ -53,6 +56,8 @@ class InvoiceSerializer(serializers.ModelSerializer):
             "items",
             "has_receipt",
             "receipt_number",
+            "amount_paid",
+            "balance_due",
             "created_at",
         ]
         read_only_fields = [
@@ -155,3 +160,12 @@ class InvoiceSerializer(serializers.ModelSerializer):
     def get_receipt_number(self, obj):
         receipt = obj.receipts.first()
         return receipt.receipt_number if receipt else None
+
+    def get_amount_paid(self, obj):
+        total = obj.receipts.aggregate(total=Sum("amount_paid")).get("total")
+        return total or Decimal("0.00")
+
+    def get_balance_due(self, obj):
+        amount_paid = self.get_amount_paid(obj)
+        balance = obj.total_amount - amount_paid
+        return balance if balance > Decimal("0.00") else Decimal("0.00")

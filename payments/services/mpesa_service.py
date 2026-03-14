@@ -8,6 +8,7 @@ from urllib import error, request
 import phonenumbers
 from django.conf import settings
 from django.db import transaction as db_transaction
+from django.db.models import Sum
 from django.utils import timezone
 
 from invoice.models import Receipt
@@ -197,23 +198,28 @@ class MpesaService:
                 transaction.paid_at = timezone.now()
 
                 invoice = transaction.invoice
-                if invoice.status != "paid":
-                    invoice.status = "paid"
-                    invoice.save(update_fields=["status"])
-
                 notes = f"Auto-generated from M-Pesa transaction {transaction.reference}."
                 if transaction.mpesa_receipt_number:
                     notes = f"M-Pesa receipt: {transaction.mpesa_receipt_number}."
 
-                Receipt.objects.get_or_create(
+                Receipt.objects.create(
                     invoice=invoice,
-                    defaults={
-                        "payment_method": "mobile_money",
-                        "payment_date": timezone.localdate(),
-                        "amount_paid": transaction.amount,
-                        "notes": notes,
-                    },
+                    payment_method="mobile_money",
+                    payment_date=timezone.localdate(),
+                    amount_paid=transaction.amount,
+                    notes=notes,
                 )
+
+                total_paid = (
+                    Receipt.objects.filter(invoice=invoice)
+                    .aggregate(total=Sum("amount_paid"))
+                    .get("total")
+                    or Decimal("0.00")
+                )
+                remaining_balance = invoice.total_amount - total_paid
+                if remaining_balance <= Decimal("0.00") and invoice.status != "paid":
+                    invoice.status = "paid"
+                    invoice.save(update_fields=["status"])
             else:
                 transaction.status = PaymentTransaction.STATUS_FAILED
 

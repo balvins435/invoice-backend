@@ -17,6 +17,7 @@ class PaymentTransaction(models.Model):
         (STATUS_COMPLETED, "Completed"),
         (STATUS_FAILED, "Failed"),
     )
+    
 
     business = models.ForeignKey(
         "business.Business",
