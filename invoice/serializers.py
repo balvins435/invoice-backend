@@ -1,7 +1,7 @@
 from decimal import Decimal
 
 from rest_framework import serializers
-from django.db.models import Sum
+from django.db import IntegrityError, transaction
 
 from business.models import Business
 
@@ -24,6 +24,8 @@ class ReceiptSerializer(serializers.ModelSerializer):
             "payment_method",
             "payment_date",
             "amount_paid",
+            "currency",
+            "reference",
             "notes",
             "created_at",
         ]
@@ -50,9 +52,11 @@ class InvoiceSerializer(serializers.ModelSerializer):
             "subtotal",
             "tax_amount",
             "total_amount",
+            "currency",
             "tax_invoice_number",
             "etims_synced_at",
             "status",
+            "paid_at",
             "items",
             "has_receipt",
             "receipt_number",
@@ -68,6 +72,7 @@ class InvoiceSerializer(serializers.ModelSerializer):
             "total_amount",
             "tax_invoice_number",
             "etims_synced_at",
+            "paid_at",
             "created_at",
         ]
 
@@ -117,8 +122,16 @@ class InvoiceSerializer(serializers.ModelSerializer):
         items_data = validated_data.pop("items")
         business = validated_data["business"]
 
-        validated_data["invoice_number"] = generate_invoice_number(business)
-        invoice = Invoice.objects.create(**validated_data)
+        with transaction.atomic():
+            Business.objects.select_for_update().get(pk=business.pk)
+            for attempt in range(3):
+                validated_data["invoice_number"] = generate_invoice_number(business)
+                try:
+                    invoice = Invoice.objects.create(**validated_data)
+                    break
+                except IntegrityError:
+                    if attempt == 2:
+                        raise
 
         for item in items_data:
             total = Decimal(str(item["quantity"])) * Decimal(str(item["unit_price"]))
@@ -162,10 +175,7 @@ class InvoiceSerializer(serializers.ModelSerializer):
         return receipt.receipt_number if receipt else None
 
     def get_amount_paid(self, obj):
-        total = obj.receipts.aggregate(total=Sum("amount_paid")).get("total")
-        return total or Decimal("0.00")
+        return obj.amount_paid
 
     def get_balance_due(self, obj):
-        amount_paid = self.get_amount_paid(obj)
-        balance = obj.total_amount - amount_paid
-        return balance if balance > Decimal("0.00") else Decimal("0.00")
+        return obj.balance_due

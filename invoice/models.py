@@ -1,4 +1,7 @@
+from decimal import Decimal
+
 from django.db import models
+from django.db.models import Sum
 from business.models import Business
 
 
@@ -49,6 +52,7 @@ class Invoice(models.Model):
     subtotal = models.DecimalField(max_digits=10, decimal_places=2)
     tax_amount = models.DecimalField(max_digits=10, decimal_places=2)
     total_amount = models.DecimalField(max_digits=10, decimal_places=2)
+    currency = models.CharField(max_length=8, default="KES")
     tax_invoice_number = models.CharField(max_length=120, blank=True, default='')
     etims_synced_at = models.DateTimeField(null=True, blank=True)
 
@@ -58,14 +62,30 @@ class Invoice(models.Model):
         default='draft'
     )
 
+    paid_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
         ordering = ['-created_at']
         unique_together = ('business', 'invoice_number')
+        indexes = [
+            models.Index(fields=['business']),
+            models.Index(fields=['status']),
+            models.Index(fields=['due_date']),
+        ]
 
     def __str__(self):
         return f"{self.invoice_number} - {self.client_name}"
+
+    @property
+    def amount_paid(self):
+        total = self.receipts.aggregate(total=Sum("amount_paid")).get("total")
+        return total or Decimal("0.00")
+
+    @property
+    def balance_due(self):
+        balance = self.total_amount - self.amount_paid
+        return balance if balance > Decimal("0.00") else Decimal("0.00")
 
 
 class InvoiceItem(models.Model):
@@ -105,6 +125,8 @@ class Receipt(models.Model):
     )
     payment_date = models.DateField()
     amount_paid = models.DecimalField(max_digits=10, decimal_places=2)
+    currency = models.CharField(max_length=8, default="KES")
+    reference = models.CharField(max_length=120, unique=True, blank=True, null=True, default=None)
     notes = models.TextField(blank=True, default='')
     created_at = models.DateTimeField(auto_now_add=True)
 

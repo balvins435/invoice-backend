@@ -4,6 +4,7 @@ from .models import Business
 
 class BusinessSerializer(serializers.ModelSerializer):
     business_name = serializers.CharField(source='name')
+    display_name = serializers.CharField(required=False, allow_blank=True)
     phone = serializers.CharField(required=False, allow_blank=True)
     address = serializers.CharField(required=False, allow_blank=True)
 
@@ -12,6 +13,8 @@ class BusinessSerializer(serializers.ModelSerializer):
         fields = [
             'id',
             'business_name',
+            'display_name',
+            'slug',
             'email',
             'phone',
             'address',

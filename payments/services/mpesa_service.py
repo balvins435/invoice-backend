@@ -97,6 +97,7 @@ class MpesaService:
             invoice=invoice,
             phone_number=msisdn,
             amount=amount_value,
+            currency=getattr(invoice, "currency", "KES"),
             status=PaymentTransaction.STATUS_PENDING,
         )
 
@@ -207,6 +208,8 @@ class MpesaService:
                     payment_method="mobile_money",
                     payment_date=timezone.localdate(),
                     amount_paid=transaction.amount,
+                    currency=getattr(invoice, "currency", "KES"),
+                    reference=transaction.mpesa_receipt_number or transaction.reference,
                     notes=notes,
                 )
 
@@ -219,7 +222,8 @@ class MpesaService:
                 remaining_balance = invoice.total_amount - total_paid
                 if remaining_balance <= Decimal("0.00") and invoice.status != "paid":
                     invoice.status = "paid"
-                    invoice.save(update_fields=["status"])
+                    invoice.paid_at = timezone.now()
+                    invoice.save(update_fields=["status", "paid_at"])
             else:
                 transaction.status = PaymentTransaction.STATUS_FAILED
 

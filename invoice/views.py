@@ -33,7 +33,8 @@ class InvoiceViewSet(viewsets.ModelViewSet):
         invoice = self.get_object()
         if invoice.status != 'paid':
             invoice.status = 'paid'
-            invoice.save(update_fields=['status'])
+            invoice.paid_at = timezone.now()
+            invoice.save(update_fields=['status', 'paid_at'])
 
         Receipt.objects.get_or_create(
             invoice=invoice,
@@ -41,6 +42,8 @@ class InvoiceViewSet(viewsets.ModelViewSet):
                 'payment_method': 'bank_transfer',
                 'payment_date': timezone.localdate(),
                 'amount_paid': invoice.total_amount,
+                'currency': invoice.currency,
+                'reference': f"manual-{invoice.invoice_number}",
                 'notes': 'Auto-generated when invoice was marked as paid.',
             },
         )
@@ -75,6 +78,8 @@ class InvoiceViewSet(viewsets.ModelViewSet):
                 payment_method='bank_transfer',
                 payment_date=timezone.localdate(),
                 amount_paid=invoice.total_amount,
+                currency=invoice.currency,
+                reference=f"manual-{invoice.invoice_number}",
                 notes='Auto-generated for an already paid invoice.',
             )
 
