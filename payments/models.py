@@ -30,6 +30,13 @@ class PaymentTransaction(models.Model):
         related_name="payment_transactions",
     )
 
+    idempotency_key = models.CharField(
+        max_length=120,
+        unique=True,
+        blank=True,
+        null=True,
+        default=None,
+    )
     reference = models.CharField(max_length=64, unique=True, default=generate_payment_reference)
     phone_number = models.CharField(max_length=20)
     amount = models.DecimalField(max_digits=10, decimal_places=2)

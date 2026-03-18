@@ -73,12 +73,18 @@ class EtimsService:
             or response_payload.get("data", {}).get("taxInvoiceNumber", "")
         )
 
-    def submit_invoice(self, invoice):
+    def submit_invoice(self, invoice, idempotency_key=None):
+        if idempotency_key:
+            existing = TaxSubmission.objects.filter(idempotency_key=idempotency_key).first()
+            if existing:
+                return existing
+
         payload = self._build_payload(invoice)
 
         submission = TaxSubmission.objects.create(
             business=invoice.business,
             invoice=invoice,
+            idempotency_key=idempotency_key,
             status=TaxSubmission.STATUS_PENDING,
             request_payload=payload,
         )

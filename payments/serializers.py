@@ -11,6 +11,7 @@ class PaymentTransactionSerializer(serializers.ModelSerializer):
         model = PaymentTransaction
         fields = [
             "id",
+            "idempotency_key",
             "reference",
             "business",
             "invoice",

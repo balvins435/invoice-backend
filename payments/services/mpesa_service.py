@@ -86,15 +86,21 @@ class MpesaService:
         with request.urlopen(req, timeout=20) as response:
             return json.loads(response.read().decode("utf-8"))
 
-    def initiate_stk_push(self, invoice, phone_number, amount=None):
+    def initiate_stk_push(self, invoice, phone_number, amount=None, idempotency_key=None):
         amount_value = Decimal(amount if amount is not None else invoice.total_amount)
         if amount_value <= 0:
             raise ValueError("Amount must be greater than zero.")
 
         msisdn = self.normalize_msisdn(phone_number)
+        if idempotency_key:
+            existing = PaymentTransaction.objects.filter(idempotency_key=idempotency_key).first()
+            if existing:
+                return existing, existing.raw_response
+
         transaction = PaymentTransaction.objects.create(
             business=invoice.business,
             invoice=invoice,
+            idempotency_key=idempotency_key,
             phone_number=msisdn,
             amount=amount_value,
             currency=getattr(invoice, "currency", "KES"),

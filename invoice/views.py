@@ -4,7 +4,10 @@ import smtplib
 from rest_framework import viewsets, permissions, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
+from rest_framework.exceptions import ValidationError
+from django.db.models import Q
 from django.utils import timezone
+from django.utils.dateparse import parse_datetime
 
 from .models import Invoice, Receipt
 from .serializers import InvoiceSerializer
@@ -24,9 +27,44 @@ class InvoiceViewSet(viewsets.ModelViewSet):
     permission_classes = [permissions.IsAuthenticated, IsBusinessOwner]
 
     def get_queryset(self):
-        return Invoice.objects.filter(
+        queryset = Invoice.objects.filter(
             business__owner=self.request.user
-        ).prefetch_related('items', 'receipts')
+        ).select_related('business').prefetch_related('items', 'receipts')
+
+        business_id = self.request.query_params.get("business") or self.request.query_params.get("business_id")
+        if business_id:
+            queryset = queryset.filter(business_id=business_id)
+
+        status_value = self.request.query_params.get("status")
+        if status_value:
+            queryset = queryset.filter(status=status_value)
+
+        date_from = self.request.query_params.get("date_from")
+        if date_from:
+            queryset = queryset.filter(issue_date__gte=date_from)
+
+        date_to = self.request.query_params.get("date_to")
+        if date_to:
+            queryset = queryset.filter(issue_date__lte=date_to)
+
+        search = self.request.query_params.get("search")
+        if search:
+            queryset = queryset.filter(
+                Q(client_name__icontains=search)
+                | Q(client_email__icontains=search)
+                | Q(invoice_number__icontains=search)
+            )
+
+        updated_after_raw = self.request.query_params.get("updated_after")
+        if updated_after_raw:
+            updated_after = parse_datetime(updated_after_raw)
+            if updated_after is None:
+                raise ValidationError({"updated_after": "Invalid datetime format. Use ISO-8601."})
+            if timezone.is_naive(updated_after):
+                updated_after = timezone.make_aware(updated_after, timezone.get_current_timezone())
+            queryset = queryset.filter(updated_at__gt=updated_after)
+
+        return queryset
 
     @action(detail=True, methods=['post'])
     def mark_paid(self, request, pk=None):

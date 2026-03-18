@@ -23,6 +23,13 @@ class TaxSubmission(models.Model):
         related_name="tax_submissions",
     )
 
+    idempotency_key = models.CharField(
+        max_length=120,
+        unique=True,
+        blank=True,
+        null=True,
+        default=None,
+    )
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_PENDING)
     tax_invoice_number = models.CharField(max_length=120, blank=True, default="")
 

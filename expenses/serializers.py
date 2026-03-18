@@ -31,8 +31,9 @@ class ExpenseSerializer(serializers.ModelSerializer):
             'expense_date',
             'receipt',
             'created_at',
+            'updated_at',
         ]
-        read_only_fields = ['total_amount', 'created_at', 'user', 'business']
+        read_only_fields = ['total_amount', 'created_at', 'updated_at', 'user', 'business']
 
     def _get_or_create_category(self, raw_category):
         if not raw_category:

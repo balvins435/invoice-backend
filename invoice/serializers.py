@@ -63,6 +63,7 @@ class InvoiceSerializer(serializers.ModelSerializer):
             "amount_paid",
             "balance_due",
             "created_at",
+            "updated_at",
         ]
         read_only_fields = [
             "id",
@@ -74,6 +75,7 @@ class InvoiceSerializer(serializers.ModelSerializer):
             "etims_synced_at",
             "paid_at",
             "created_at",
+            "updated_at",
         ]
 
     def _compute_totals(self, items, business):

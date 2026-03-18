@@ -10,6 +10,7 @@ class TaxSubmissionSerializer(serializers.ModelSerializer):
         model = TaxSubmission
         fields = [
             "id",
+            "idempotency_key",
             "business",
             "invoice",
             "invoice_number",

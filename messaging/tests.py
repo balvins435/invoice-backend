@@ -3,6 +3,7 @@ from decimal import Decimal
 
 from django.contrib.auth import get_user_model
 from django.test import TestCase
+from rest_framework.test import APIClient
 
 from business.models import Business
 from invoice.models import Invoice
@@ -26,6 +27,7 @@ class AutoPaidWhatsAppSignalTests(TestCase):
             address="Nairobi",
             tax_rate=Decimal("16.00"),
         )
+        self.client = APIClient()
 
     def _create_invoice(self):
         return Invoice.objects.create(
@@ -76,3 +78,42 @@ class AutoPaidWhatsAppSignalTests(TestCase):
         self.assertEqual(message.delivery_status, WhatsAppMessage.STATUS_FAILED)
         self.assertIn("no completed payment phone number", message.error_message.lower())
         self.assertEqual(message.attempt_count, 1)
+
+    def test_manual_send_invoice_is_idempotent_with_header_key(self):
+        self.client.force_authenticate(self.user)
+        invoice = self._create_invoice()
+
+        payload = {
+            "invoice_id": invoice.id,
+            "phone_number": "254712345678",
+        }
+        first = self.client.post(
+            "/api/messaging/whatsapp/send-invoice/",
+            payload,
+            format="json",
+            HTTP_X_IDEMPOTENCY_KEY="wa-test-key-1",
+        )
+        self.assertEqual(first.status_code, 201)
+        self.assertEqual(
+            WhatsAppMessage.objects.filter(
+                invoice=invoice,
+                message_type=WhatsAppMessage.TYPE_MANUAL_INVOICE,
+            ).count(),
+            1,
+        )
+
+        second = self.client.post(
+            "/api/messaging/whatsapp/send-invoice/",
+            payload,
+            format="json",
+            HTTP_X_IDEMPOTENCY_KEY="wa-test-key-1",
+        )
+        self.assertEqual(second.status_code, 200)
+        self.assertTrue(second.data.get("idempotent_replay"))
+        self.assertEqual(
+            WhatsAppMessage.objects.filter(
+                invoice=invoice,
+                message_type=WhatsAppMessage.TYPE_MANUAL_INVOICE,
+            ).count(),
+            1,
+        )

@@ -6,8 +6,4 @@ class InvoiceConfig(AppConfig):
     name = 'invoice'
 
     def ready(self):
-        """Import signals when app is ready"""
-        try:
-            import invoices.signals
-        except ImportError:
-            pass
+        import invoice.signals  # noqa: F401

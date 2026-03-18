@@ -21,6 +21,7 @@ class BusinessSerializer(serializers.ModelSerializer):
             'logo',
             'logo_shape',
             'tax_rate',
-            'created_at'
+            'created_at',
+            'updated_at',
         ]
-        read_only_fields = ['id', 'created_at']
+        read_only_fields = ['id', 'created_at', 'updated_at']

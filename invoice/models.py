@@ -64,14 +64,15 @@ class Invoice(models.Model):
 
     paid_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         ordering = ['-created_at']
         unique_together = ('business', 'invoice_number')
         indexes = [
-            models.Index(fields=['business']),
-            models.Index(fields=['status']),
-            models.Index(fields=['due_date']),
+            models.Index(fields=['business'], name='invoice_business_idx'),
+            models.Index(fields=['status'], name='invoice_status_idx'),
+            models.Index(fields=['due_date'], name='invoice_due_date_idx'),
         ]
 
     def __str__(self):

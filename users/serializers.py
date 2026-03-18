@@ -43,6 +43,7 @@ class UserSerializer(serializers.ModelSerializer):
             'email_weekly_summary',
             'email_marketing',
             'created_at',
+            'updated_at',
         ]
 
 

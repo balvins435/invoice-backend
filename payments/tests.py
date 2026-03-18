@@ -2,7 +2,7 @@ from datetime import date
 from decimal import Decimal
 
 from django.contrib.auth import get_user_model
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from rest_framework.test import APIClient
 
 from business.models import Business
@@ -92,3 +92,37 @@ class MpesaIntegrationTests(TestCase):
         response_retry = self.client.post("/api/payments/mpesa/callback/", payload, format="json")
         self.assertEqual(response_retry.status_code, 200)
         self.assertEqual(Receipt.objects.filter(invoice=self.invoice).count(), 1)
+
+    @override_settings(
+        MPESA_CONSUMER_KEY="",
+        MPESA_CONSUMER_SECRET="",
+        MPESA_SHORTCODE="",
+        MPESA_PASSKEY="",
+        MPESA_CALLBACK_URL="",
+    )
+    def test_initiate_stk_is_idempotent_with_header_key(self):
+        self.client.force_authenticate(self.user)
+
+        payload = {
+            "invoice_id": self.invoice.id,
+            "phone_number": "0712345678",
+            "amount": "116.00",
+        }
+        first = self.client.post(
+            "/api/payments/transactions/initiate-stk/",
+            payload,
+            format="json",
+            HTTP_X_IDEMPOTENCY_KEY="pay-test-key-1",
+        )
+        self.assertEqual(first.status_code, 201)
+        self.assertEqual(PaymentTransaction.objects.count(), 1)
+
+        second = self.client.post(
+            "/api/payments/transactions/initiate-stk/",
+            payload,
+            format="json",
+            HTTP_X_IDEMPOTENCY_KEY="pay-test-key-1",
+        )
+        self.assertEqual(second.status_code, 200)
+        self.assertTrue(second.data.get("idempotent_replay"))
+        self.assertEqual(PaymentTransaction.objects.count(), 1)

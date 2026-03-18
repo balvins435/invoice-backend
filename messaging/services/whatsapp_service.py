@@ -72,12 +72,17 @@ class WhatsAppService:
         with request.urlopen(req, timeout=20) as response:
             return json.loads(response.read().decode("utf-8"))
 
-    def send_invoice(self, invoice, phone_number, request_obj=None, custom_message=""):
+    def send_invoice(self, invoice, phone_number, request_obj=None, custom_message="", idempotency_key=None):
         invoice_link = self.build_invoice_link(invoice, request_obj=request_obj)
         message_body = custom_message.strip() or (
             f"Hello {invoice.client_name}, your invoice {invoice.invoice_number} is ready. "
             f"View and download it here: {invoice_link}"
         )
+
+        if idempotency_key:
+            existing = WhatsAppMessage.objects.filter(idempotency_key=idempotency_key).first()
+            if existing:
+                return existing
 
         message = WhatsAppMessage.objects.create(
             business=invoice.business,
@@ -87,6 +92,7 @@ class WhatsAppService:
             message_text=message_body,
             message_type=WhatsAppMessage.TYPE_MANUAL_INVOICE,
             delivery_status=WhatsAppMessage.STATUS_PENDING,
+            idempotency_key=idempotency_key,
         )
         return self._dispatch_message(message, phone_number, message_body)
 

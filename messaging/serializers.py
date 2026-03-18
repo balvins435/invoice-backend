@@ -10,6 +10,7 @@ class WhatsAppMessageSerializer(serializers.ModelSerializer):
         model = WhatsAppMessage
         fields = [
             "id",
+            "idempotency_key",
             "business",
             "invoice",
             "invoice_number",

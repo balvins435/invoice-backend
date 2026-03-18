@@ -1,8 +1,11 @@
 from django.conf import settings
 from django.core import signing
 from django.http import FileResponse
+from django.utils import timezone
+from django.utils.dateparse import parse_datetime
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
+from rest_framework.exceptions import ValidationError
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -13,6 +16,12 @@ from invoice.utils import generate_invoice_pdf
 from .models import WhatsAppMessage
 from .serializers import SendWhatsAppInvoiceSerializer, WhatsAppMessageSerializer
 from .services.whatsapp_service import WhatsAppService
+
+
+def _get_idempotency_key(request):
+    key = request.headers.get("X-Idempotency-Key") or request.data.get("idempotency_key")
+    key = (key or "").strip()
+    return key or None
 
 
 class WhatsAppMessageViewSet(viewsets.ReadOnlyModelViewSet):
@@ -32,12 +41,41 @@ class WhatsAppMessageViewSet(viewsets.ReadOnlyModelViewSet):
         if status_value:
             queryset = queryset.filter(delivery_status=status_value)
 
+        updated_after_raw = self.request.query_params.get("updated_after")
+        if updated_after_raw:
+            updated_after = parse_datetime(updated_after_raw)
+            if updated_after is None:
+                raise ValidationError({"updated_after": "Invalid datetime format. Use ISO-8601."})
+            if timezone.is_naive(updated_after):
+                updated_after = timezone.make_aware(updated_after, timezone.get_current_timezone())
+            queryset = queryset.filter(updated_at__gt=updated_after)
+
         return queryset
 
     @action(detail=False, methods=["post"], url_path="send-invoice")
     def send_invoice(self, request):
         serializer = SendWhatsAppInvoiceSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
+
+        idempotency_key = _get_idempotency_key(request)
+        if idempotency_key:
+            existing = WhatsAppMessage.objects.filter(
+                idempotency_key=idempotency_key,
+                business__owner=request.user,
+            ).select_related("invoice", "business").first()
+            if existing:
+                return Response(
+                    {
+                        **WhatsAppMessageSerializer(existing).data,
+                        "idempotent_replay": True,
+                    },
+                    status=status.HTTP_200_OK,
+                )
+            if WhatsAppMessage.objects.filter(idempotency_key=idempotency_key).exists():
+                return Response(
+                    {"error": "Idempotency key has already been used."},
+                    status=status.HTTP_409_CONFLICT,
+                )
 
         invoice = Invoice.objects.filter(
             id=serializer.validated_data["invoice_id"],
@@ -52,6 +90,7 @@ class WhatsAppMessageViewSet(viewsets.ReadOnlyModelViewSet):
             phone_number=serializer.validated_data["phone_number"],
             request_obj=request,
             custom_message=serializer.validated_data.get("message", ""),
+            idempotency_key=idempotency_key,
         )
 
         if message.delivery_status == WhatsAppMessage.STATUS_SENT and invoice.status == "draft":
