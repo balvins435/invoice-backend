@@ -33,6 +33,10 @@ class PaymentTransactionViewSet(viewsets.ReadOnlyModelViewSet):
             business__owner=self.request.user
         ).select_related("invoice", "business")
 
+        business_id = self.request.query_params.get("business") or self.request.query_params.get("business_id")
+        if business_id:
+            queryset = queryset.filter(business_id=business_id)
+
         invoice_id = self.request.query_params.get("invoice") or self.request.query_params.get("invoice_id")
         if invoice_id:
             queryset = queryset.filter(invoice_id=invoice_id)
