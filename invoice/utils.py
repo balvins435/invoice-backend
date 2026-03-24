@@ -1,3 +1,5 @@
+import logging
+import os
 from io import BytesIO
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
@@ -12,9 +14,43 @@ from reportlab.platypus import (
     TableStyle,
 )
 
+logger = logging.getLogger(__name__)
+
 
 def _format_amount(value):
     return f"{value:,.2f}"
+
+
+def _validate_logo_file(business):
+    """Validate that the logo file exists and is accessible.
+    
+    Args:
+        business: Business instance with logo field
+        
+    Returns:
+        bool: True if logo is valid and accessible, False otherwise
+    """
+    if not business.logo:
+        return False
+    
+    try:
+        logo_path = business.logo.path
+        if not os.path.exists(logo_path):
+            logger.warning(
+                "Logo file missing for business_id=%s: path=%s",
+                business.id,
+                logo_path
+            )
+            return False
+        return True
+    except Exception as e:
+        logger.error(
+            "Error validating logo for business_id=%s: %s",
+            business.id,
+            str(e),
+            exc_info=True
+        )
+        return False
 
 
 def _build_business_header(invoice, styles):
@@ -30,7 +66,19 @@ def _build_business_header(invoice, styles):
             logo_flowable.drawHeight = 14 * mm
             logo_flowable.drawWidth = 14 * mm
             logo_flowable.hAlign = "LEFT"
-        except Exception:
+            logger.debug(
+                "Logo loaded successfully for business_id=%s, invoice_number=%s",
+                invoice.business.id,
+                invoice.invoice_number
+            )
+        except Exception as e:
+            logger.warning(
+                "Failed to load logo for business_id=%s, invoice_number=%s: %s",
+                invoice.business.id,
+                invoice.invoice_number,
+                str(e),
+                exc_info=True
+            )
             logo_flowable = None
 
     left_content = [[header_title]]
@@ -336,7 +384,19 @@ def generate_receipt_pdf(receipt):
             logo_flowable.drawHeight = 14 * mm
             logo_flowable.drawWidth = 14 * mm
             logo_flowable.hAlign = "LEFT"
-        except Exception:
+            logger.debug(
+                "Logo loaded successfully for receipt_number=%s, invoice_number=%s",
+                receipt.receipt_number,
+                invoice.invoice_number
+            )
+        except Exception as e:
+            logger.warning(
+                "Failed to load logo for receipt_number=%s, invoice_number=%s: %s",
+                receipt.receipt_number,
+                invoice.invoice_number,
+                str(e),
+                exc_info=True
+            )
             logo_flowable = None
 
     brand = Paragraph(
