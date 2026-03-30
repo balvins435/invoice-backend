@@ -82,6 +82,8 @@ INSTALLED_APPS = [
     "payments",
     "messaging",
     "tax",
+    "ai",
+
 ]
 
 MIDDLEWARE = [
