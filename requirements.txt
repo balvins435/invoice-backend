@@ -42,3 +42,6 @@ factory-boy
 social-auth-app-django
 cloudinary
 django-cloudinary-storage
+
+#openai
+openai
