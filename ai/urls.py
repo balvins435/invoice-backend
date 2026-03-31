@@ -1,6 +1,7 @@
 from django.urls import path
-from .views import generate_invoice
+from .views import AIAssistantAPIView, GenerateInvoiceAPIView
 
 urlpatterns = [
-    path('generate-invoice/', generate_invoice),
+    path("assistant/", AIAssistantAPIView.as_view(), name="ai-assistant"),
+    path("generate-invoice/", GenerateInvoiceAPIView.as_view(), name="ai-generate-invoice"),
 ]
