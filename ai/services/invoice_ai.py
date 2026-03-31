@@ -19,6 +19,13 @@ def _to_float(value):
     return float(value)
 
 
+def _safe_number(value, default):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def _serialize_recent_invoices(business):
     recent_invoices = (
         Invoice.objects.filter(business=business)
@@ -142,8 +149,8 @@ def _normalize_invoice_draft(payload, business=None):
             if not isinstance(item, dict):
                 continue
             description = str(item.get("description") or item.get("name") or "").strip()
-            quantity = item.get("quantity") or 1
-            unit_price = item.get("unit_price") or item.get("price") or 0
+            quantity = _safe_number(item.get("quantity") or 1, 1)
+            unit_price = _safe_number(item.get("unit_price") or item.get("price") or 0, 0)
             normalized_items.append(
                 {
                     "description": description,

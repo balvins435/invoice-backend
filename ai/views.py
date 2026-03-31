@@ -7,7 +7,7 @@ from business.models import Business
 
 from .serializers import AIAssistantRequestSerializer, GenerateInvoiceRequestSerializer
 from .services.invoice_ai import generate_assistant_response, generate_invoice_from_text
-from .services.openai_service import OpenAIServiceError
+from .services.openai_service import OpenAIServiceError as AIServiceError
 
 
 class AIAssistantAPIView(APIView):
@@ -31,8 +31,8 @@ class AIAssistantAPIView(APIView):
 
         try:
             payload = generate_assistant_response(prompt=prompt, business=business, mode=mode)
-        except OpenAIServiceError as exc:
-            return Response({"error": str(exc)}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+        except AIServiceError as exc:
+            return Response({"error": str(exc)}, status=getattr(exc, "status_code", status.HTTP_503_SERVICE_UNAVAILABLE))
 
         return Response(payload, status=status.HTTP_200_OK)
 
@@ -46,7 +46,7 @@ class GenerateInvoiceAPIView(APIView):
 
         try:
             data = generate_invoice_from_text(serializer.validated_data["text"])
-        except OpenAIServiceError as exc:
-            return Response({"error": str(exc)}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+        except AIServiceError as exc:
+            return Response({"error": str(exc)}, status=getattr(exc, "status_code", status.HTTP_503_SERVICE_UNAVAILABLE))
 
         return Response(data, status=status.HTTP_200_OK)

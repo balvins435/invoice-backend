@@ -358,5 +358,12 @@ if not DEBUG:
     CSRF_COOKIE_SECURE = True
 
 
-#OPENAI
-OPENAI_API_KEY=env("OPENAI_API_KEY", default="")
+# AI providers
+AI_PROVIDER = env("AI_PROVIDER", default="openai")
+AI_PROVIDER_TIMEOUT = env.int("AI_PROVIDER_TIMEOUT", default=30)
+
+OPENAI_API_KEY = env("OPENAI_API_KEY", default="")
+OPENAI_MODEL = env("OPENAI_MODEL", default="gpt-4o-mini")
+
+GEMINI_API_KEY = env("GEMINI_API_KEY", default="")
+GEMINI_MODEL = env("GEMINI_MODEL", default="gemini-1.5-flash")

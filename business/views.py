@@ -24,7 +24,7 @@ class BusinessViewSet(viewsets.ModelViewSet):
     permission_classes = [permissions.IsAuthenticated, IsOwner]
 
     def get_queryset(self):
-        queryset = Business.objects.filter(owner=self.request.user)
+        queryset = Business.objects.filter(owner=self.request.user).order_by("id")
         updated_after = _parse_updated_after(self.request.query_params.get("updated_after"))
         if updated_after:
             queryset = queryset.filter(updated_at__gt=updated_after)
