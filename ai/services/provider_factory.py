@@ -6,7 +6,7 @@ from .providers.openai_provider import OpenAIProvider
 
 
 def get_ai_provider():
-    provider_name = str(getattr(settings, "AI_PROVIDER", "openai")).strip().lower()
+    provider_name = str(getattr(settings, "AI_PROVIDER", "openai") or "openai").strip().lower()
     if provider_name == "openai":
         return OpenAIProvider()
     if provider_name == "gemini":

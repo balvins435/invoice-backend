@@ -10,11 +10,11 @@ logger = logging.getLogger(__name__)
 
 class OpenAIProvider(BaseAIProvider):
     def __init__(self):
-        api_key = getattr(settings, "OPENAI_API_KEY", "")
+        api_key = str(getattr(settings, "OPENAI_API_KEY", "") or "").strip()
         if not api_key:
             raise AIServiceError("OPENAI_API_KEY is not configured.")
         self.client = OpenAI(api_key=api_key)
-        self.default_model = getattr(settings, "OPENAI_MODEL", "gpt-4o-mini")
+        self.default_model = str(getattr(settings, "OPENAI_MODEL", "gpt-4o-mini") or "gpt-4o-mini").strip()
 
     def generate_json_response(self, system_prompt, user_prompt, model=None):
         try:

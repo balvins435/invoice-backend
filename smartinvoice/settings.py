@@ -367,3 +367,4 @@ OPENAI_MODEL = env("OPENAI_MODEL", default="gpt-4o-mini")
 
 GEMINI_API_KEY = env("GEMINI_API_KEY", default="")
 GEMINI_MODEL = env("GEMINI_MODEL", default="gemini-1.5-flash")
+GEMINI_API_VERSION = env("GEMINI_API_VERSION", default="v1")
