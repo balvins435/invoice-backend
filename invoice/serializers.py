@@ -53,6 +53,7 @@ class InvoiceSerializer(serializers.ModelSerializer):
             "tax_amount",
             "total_amount",
             "currency",
+            "template",
             "tax_invoice_number",
             "etims_synced_at",
             "status",

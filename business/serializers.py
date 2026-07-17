@@ -21,6 +21,7 @@ class BusinessSerializer(serializers.ModelSerializer):
             'logo',
             'logo_shape',
             'tax_rate',
+            'default_invoice_template',
             'created_at',
             'updated_at',
         ]

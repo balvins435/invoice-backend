@@ -10,6 +10,14 @@ class Business(models.Model):
         (LOGO_SHAPE_RECT, "Rect"),
         (LOGO_SHAPE_CIRCLE, "Circle"),
     )
+    TEMPLATE_CLASSIC = "classic"
+    TEMPLATE_MODERN = "modern"
+    TEMPLATE_MINIMAL = "minimal"
+    INVOICE_TEMPLATE_CHOICES = (
+        (TEMPLATE_CLASSIC, "Classic"),
+        (TEMPLATE_MODERN, "Modern"),
+        (TEMPLATE_MINIMAL, "Minimal"),
+    )
     owner = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.CASCADE,
@@ -31,6 +39,11 @@ class Business(models.Model):
         max_digits=5,
         decimal_places=2,
         default=16.00
+    )
+    default_invoice_template = models.CharField(
+        max_length=20,
+        choices=INVOICE_TEMPLATE_CHOICES,
+        default=TEMPLATE_CLASSIC,
     )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

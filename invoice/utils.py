@@ -389,8 +389,103 @@ def _build_items_table(invoice, styles):
     return table
 
 
-def generate_invoice_pdf(invoice):
+def _template_palette(template):
+    if template == "minimal":
+        return {
+            "header_bg": colors.white,
+            "header_text": BRAND_TEXT,
+            "header_meta": BRAND_MUTED,
+            "accent": BRAND_TEXT,
+            "surface": colors.white,
+            "table_header": colors.HexColor("#F1F5F9"),
+            "table_header_text": BRAND_TEXT,
+        }
+    if template == "modern":
+        return {
+            "header_bg": colors.HexColor("#047857"),
+            "header_text": colors.white,
+            "header_meta": colors.HexColor("#D1FAE5"),
+            "accent": colors.HexColor("#047857"),
+            "surface": colors.HexColor("#ECFDF5"),
+            "table_header": colors.HexColor("#064E3B"),
+            "table_header_text": colors.white,
+        }
+    return {
+        "header_bg": BRAND_NAVY,
+        "header_text": colors.white,
+        "header_meta": colors.HexColor("#DBEAFE"),
+        "accent": BRAND_ACCENT,
+        "surface": BRAND_SURFACE,
+        "table_header": BRAND_NAVY,
+        "table_header_text": colors.white,
+    }
+
+
+def _apply_invoice_template_styles(styles, palette):
+    styles["HeroTitle"].textColor = palette["header_text"]
+    styles["HeroMeta"].textColor = palette["header_meta"]
+    styles["Eyebrow"].textColor = palette["header_meta"]
+    styles["SectionTitle"].textColor = palette["accent"]
+    return styles
+
+
+def _build_template_header(title, subtitle, meta_lines, badge_text, badge_background, badge_color, business, styles, log_context, palette):
+    header = _build_header(
+        title,
+        subtitle,
+        meta_lines,
+        badge_text,
+        badge_background,
+        badge_color,
+        business,
+        styles,
+        log_context,
+    )
+    header.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, -1), palette["header_bg"]),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 16),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 16),
+                ("TOPPADDING", (0, 0), (-1, -1), 14),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 14),
+                ("BOX", (0, 0), (-1, -1), 0.7, BRAND_BORDER if palette["header_bg"] == colors.white else palette["header_bg"]),
+            ]
+        )
+    )
+    return header
+
+
+def _build_template_items_table(invoice, styles, palette):
+    table = _build_items_table(invoice, styles)
+    table.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, 0), palette["table_header"]),
+                ("TEXTCOLOR", (0, 0), (-1, 0), palette["table_header_text"]),
+                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                ("FONTSIZE", (0, 0), (-1, 0), 8),
+                ("LEFTPADDING", (0, 0), (-1, -1), 10),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 10),
+                ("TOPPADDING", (0, 0), (-1, -1), 9),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 9),
+                ("ALIGN", (1, 0), (-1, -1), "RIGHT"),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("LINEBELOW", (0, 1), (-1, -1), 0.5, BRAND_BORDER),
+                ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, palette["surface"]]),
+                ("BOX", (0, 0), (-1, -1), 0.7, BRAND_BORDER),
+            ]
+        )
+    )
+    return table
+
+
+def generate_invoice_pdf(invoice, template=None):
     styles = _build_styles()
+    selected_template = template or getattr(invoice, "template", "classic") or "classic"
+    palette = _template_palette(selected_template)
+    styles = _apply_invoice_template_styles(styles, palette)
     buffer = BytesIO()
     doc = SimpleDocTemplate(
         buffer,
@@ -405,7 +500,7 @@ def generate_invoice_pdf(invoice):
     currency = invoice.currency or "KES"
     amount_due = _format_money(invoice.balance_due, currency)
 
-    header = _build_header(
+    header = _build_template_header(
         title=invoice.business.display_name or invoice.business.name,
         subtitle=f"Invoice {invoice.invoice_number}",
         meta_lines=[
@@ -419,6 +514,7 @@ def generate_invoice_pdf(invoice):
         business=invoice.business,
         styles=styles,
         log_context=f"business_id={invoice.business.id}, invoice_number={invoice.invoice_number}",
+        palette=palette,
     )
 
     summary_cards = Table(
@@ -505,7 +601,7 @@ def generate_invoice_pdf(invoice):
         Spacer(1, 7 * mm),
         Paragraph("Invoice Items", styles["SectionTitle"]),
         Spacer(1, 2.5 * mm),
-        _build_items_table(invoice, styles),
+        _build_template_items_table(invoice, styles, palette),
         Spacer(1, 7 * mm),
         Table([["", totals]], colWidths=[86 * mm, 78 * mm], style=TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP")])),
         Spacer(1, 7 * mm),

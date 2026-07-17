@@ -92,7 +92,8 @@ class InvoiceViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['get'])
     def pdf(self, request, pk=None):
         invoice = self.get_object()
-        pdf_buffer = generate_invoice_pdf(invoice)
+        template = request.query_params.get("template") or invoice.template
+        pdf_buffer = generate_invoice_pdf(invoice, template=template)
 
         return FileResponse(
             pdf_buffer,

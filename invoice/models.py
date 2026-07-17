@@ -26,6 +26,15 @@ def generate_receipt_number():
 
 
 class Invoice(models.Model):
+    TEMPLATE_CLASSIC = 'classic'
+    TEMPLATE_MODERN = 'modern'
+    TEMPLATE_MINIMAL = 'minimal'
+    TEMPLATE_CHOICES = (
+        (TEMPLATE_CLASSIC, 'Classic'),
+        (TEMPLATE_MODERN, 'Modern'),
+        (TEMPLATE_MINIMAL, 'Minimal'),
+    )
+
     STATUS_CHOICES = (
         ('draft', 'Draft'),
         ('sent', 'Sent'),
@@ -53,6 +62,11 @@ class Invoice(models.Model):
     tax_amount = models.DecimalField(max_digits=10, decimal_places=2)
     total_amount = models.DecimalField(max_digits=10, decimal_places=2)
     currency = models.CharField(max_length=8, default="KES")
+    template = models.CharField(
+        max_length=20,
+        choices=TEMPLATE_CHOICES,
+        default=TEMPLATE_CLASSIC,
+    )
     tax_invoice_number = models.CharField(max_length=120, blank=True, default='')
     etims_synced_at = models.DateTimeField(null=True, blank=True)
 
