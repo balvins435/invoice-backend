@@ -1,11 +1,8 @@
 from django.conf import settings
 from django.core import signing
 from django.http import FileResponse
-from django.utils import timezone
-from django.utils.dateparse import parse_datetime
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
-from rest_framework.exceptions import ValidationError
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -16,12 +13,8 @@ from invoice.utils import generate_invoice_pdf
 from .models import WhatsAppMessage
 from .serializers import SendWhatsAppInvoiceSerializer, WhatsAppMessageSerializer
 from .services.whatsapp_service import WhatsAppService
-
-
-def _get_idempotency_key(request):
-    key = request.headers.get("X-Idempotency-Key") or request.data.get("idempotency_key")
-    key = (key or "").strip()
-    return key or None
+from .selectors import filter_messages, messages_for_user
+from .application.services import find_invoice, find_replay, idempotency_key_from, key_is_used, send_invoice_message
 
 
 class WhatsAppMessageViewSet(viewsets.ReadOnlyModelViewSet):
@@ -29,44 +22,16 @@ class WhatsAppMessageViewSet(viewsets.ReadOnlyModelViewSet):
     permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
-        queryset = WhatsAppMessage.objects.filter(
-            business__owner=self.request.user
-        ).select_related("invoice", "business")
-
-        business_id = self.request.query_params.get("business") or self.request.query_params.get("business_id")
-        if business_id:
-            queryset = queryset.filter(business_id=business_id)
-
-        invoice_id = self.request.query_params.get("invoice") or self.request.query_params.get("invoice_id")
-        if invoice_id:
-            queryset = queryset.filter(invoice_id=invoice_id)
-
-        status_value = self.request.query_params.get("status")
-        if status_value:
-            queryset = queryset.filter(delivery_status=status_value)
-
-        updated_after_raw = self.request.query_params.get("updated_after")
-        if updated_after_raw:
-            updated_after = parse_datetime(updated_after_raw)
-            if updated_after is None:
-                raise ValidationError({"updated_after": "Invalid datetime format. Use ISO-8601."})
-            if timezone.is_naive(updated_after):
-                updated_after = timezone.make_aware(updated_after, timezone.get_current_timezone())
-            queryset = queryset.filter(updated_at__gt=updated_after)
-
-        return queryset
+        return filter_messages(messages_for_user(self.request.user), self.request.query_params)
 
     @action(detail=False, methods=["post"], url_path="send-invoice")
     def send_invoice(self, request):
         serializer = SendWhatsAppInvoiceSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
-        idempotency_key = _get_idempotency_key(request)
+        idempotency_key = idempotency_key_from(request)
         if idempotency_key:
-            existing = WhatsAppMessage.objects.filter(
-                idempotency_key=idempotency_key,
-                business__owner=request.user,
-            ).select_related("invoice", "business").first()
+            existing = find_replay(idempotency_key, request.user)
             if existing:
                 return Response(
                     {
@@ -75,31 +40,24 @@ class WhatsAppMessageViewSet(viewsets.ReadOnlyModelViewSet):
                     },
                     status=status.HTTP_200_OK,
                 )
-            if WhatsAppMessage.objects.filter(idempotency_key=idempotency_key).exists():
+            if key_is_used(idempotency_key):
                 return Response(
                     {"error": "Idempotency key has already been used."},
                     status=status.HTTP_409_CONFLICT,
                 )
 
-        invoice = Invoice.objects.filter(
-            id=serializer.validated_data["invoice_id"],
-            business__owner=request.user,
-        ).select_related("business").prefetch_related("items").first()
+        invoice = find_invoice(serializer.validated_data["invoice_id"], request.user)
 
         if not invoice:
             return Response({"error": "Invoice not found."}, status=status.HTTP_404_NOT_FOUND)
 
-        message = WhatsAppService().send_invoice(
+        message = send_invoice_message(
             invoice=invoice,
             phone_number=serializer.validated_data["phone_number"],
-            request_obj=request,
+            request=request,
             custom_message=serializer.validated_data.get("message", ""),
             idempotency_key=idempotency_key,
         )
-
-        if message.delivery_status == WhatsAppMessage.STATUS_SENT and invoice.status == "draft":
-            invoice.status = "sent"
-            invoice.save(update_fields=["status"])
 
         status_code = status.HTTP_201_CREATED if message.delivery_status == WhatsAppMessage.STATUS_SENT else status.HTTP_502_BAD_GATEWAY
         return Response(WhatsAppMessageSerializer(message).data, status=status_code)

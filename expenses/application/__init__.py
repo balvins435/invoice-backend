@@ -1,0 +1,1 @@
+"""Expense application use cases."""

@@ -3,11 +3,6 @@ from rest_framework.decorators import action
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
-from rest_framework.exceptions import ValidationError
-from django.utils import timezone
-from django.utils.dateparse import parse_datetime
-
-from invoice.models import Invoice
 
 from .models import PaymentTransaction
 from .serializers import (
@@ -16,12 +11,8 @@ from .serializers import (
     STKPushRequestSerializer,
 )
 from .services.mpesa_service import MpesaService
-
-
-def _get_idempotency_key(request):
-    key = request.headers.get("X-Idempotency-Key") or request.data.get("idempotency_key")
-    key = (key or "").strip()
-    return key or None
+from .application.services import find_invoice, find_replay, idempotency_key_from, idempotency_key_is_used, initiate_payment
+from .selectors import filter_transactions, transaction_for_checkout_request, transactions_for_user
 
 
 class PaymentTransactionViewSet(viewsets.ReadOnlyModelViewSet):
@@ -29,44 +20,16 @@ class PaymentTransactionViewSet(viewsets.ReadOnlyModelViewSet):
     permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
-        queryset = PaymentTransaction.objects.filter(
-            business__owner=self.request.user
-        ).select_related("invoice", "business")
-
-        business_id = self.request.query_params.get("business") or self.request.query_params.get("business_id")
-        if business_id:
-            queryset = queryset.filter(business_id=business_id)
-
-        invoice_id = self.request.query_params.get("invoice") or self.request.query_params.get("invoice_id")
-        if invoice_id:
-            queryset = queryset.filter(invoice_id=invoice_id)
-
-        status_value = self.request.query_params.get("status")
-        if status_value:
-            queryset = queryset.filter(status=status_value)
-
-        updated_after_raw = self.request.query_params.get("updated_after")
-        if updated_after_raw:
-            updated_after = parse_datetime(updated_after_raw)
-            if updated_after is None:
-                raise ValidationError({"updated_after": "Invalid datetime format. Use ISO-8601."})
-            if timezone.is_naive(updated_after):
-                updated_after = timezone.make_aware(updated_after, timezone.get_current_timezone())
-            queryset = queryset.filter(updated_at__gt=updated_after)
-
-        return queryset
+        return filter_transactions(transactions_for_user(self.request.user), self.request.query_params)
 
     @action(detail=False, methods=["post"], url_path="initiate-stk")
     def initiate_stk(self, request):
         serializer = STKPushRequestSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
-        idempotency_key = _get_idempotency_key(request)
+        idempotency_key = idempotency_key_from(request)
         if idempotency_key:
-            existing = PaymentTransaction.objects.filter(
-                idempotency_key=idempotency_key,
-                business__owner=request.user,
-            ).select_related("invoice", "business").first()
+            existing = find_replay(key=idempotency_key, user=request.user)
             if existing:
                 return Response(
                     {
@@ -76,16 +39,13 @@ class PaymentTransactionViewSet(viewsets.ReadOnlyModelViewSet):
                     },
                     status=status.HTTP_200_OK,
                 )
-            if PaymentTransaction.objects.filter(idempotency_key=idempotency_key).exists():
+            if idempotency_key_is_used(idempotency_key):
                 return Response(
                     {"error": "Idempotency key has already been used."},
                     status=status.HTTP_409_CONFLICT,
                 )
 
-        invoice = Invoice.objects.filter(
-            id=serializer.validated_data["invoice_id"],
-            business__owner=request.user,
-        ).select_related("business").first()
+        invoice = find_invoice(invoice_id=serializer.validated_data["invoice_id"], user=request.user)
 
         if not invoice:
             return Response({"error": "Invoice not found."}, status=status.HTTP_404_NOT_FOUND)
@@ -96,8 +56,7 @@ class PaymentTransactionViewSet(viewsets.ReadOnlyModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        mpesa_service = MpesaService()
-        transaction, provider_response = mpesa_service.initiate_stk_push(
+        transaction, provider_response = initiate_payment(
             invoice=invoice,
             phone_number=serializer.validated_data["phone_number"],
             amount=serializer.validated_data.get("amount"),
@@ -148,9 +107,7 @@ class MpesaCallbackAPIView(APIView):
         if not checkout_request_id:
             return Response({"ResultCode": 0, "ResultDesc": "Accepted"}, status=status.HTTP_200_OK)
 
-        transaction = PaymentTransaction.objects.filter(
-            checkout_request_id=checkout_request_id
-        ).order_by("-id").first()
+        transaction = transaction_for_checkout_request(checkout_request_id)
 
         if not transaction:
             return Response({"ResultCode": 0, "ResultDesc": "Accepted"}, status=status.HTTP_200_OK)

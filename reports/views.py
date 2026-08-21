@@ -1,19 +1,15 @@
-from django.db.models import Q, Sum
 from django.http import FileResponse
 from django.utils import timezone
-from rest_framework.exceptions import ValidationError
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from business.models import Business
-from expenses.models import Expense
 from expenses.serializers import ExpenseSerializer
-from invoice.models import Invoice
 from invoice.serializers import InvoiceSerializer
 
 from .services import monthly_report, monthly_reports_for_year, tax_summary
 from .utils import generate_report_pdf
+from .selectors import dashboard_data, resolve_business
 
 
 class BusinessScopedReportMixin:
@@ -21,21 +17,7 @@ class BusinessScopedReportMixin:
 
     def _resolve_business(self, request):
         business_id = request.query_params.get("business") or request.query_params.get("business_id")
-        queryset = Business.objects.filter(owner=request.user).order_by("id")
-
-        if business_id:
-            business = queryset.filter(id=business_id).first()
-            if business:
-                return business
-            raise ValidationError({"business_id": "Invalid business for this user."})
-
-        business_count = queryset.count()
-        if business_count == 1:
-            return queryset.first()
-        if business_count == 0:
-            return None
-
-        raise ValidationError({"business_id": self.missing_business_message})
+        return resolve_business(user=request.user, business_id=business_id, missing_message=self.missing_business_message)
 
 
 class MonthlyReportAPIView(BusinessScopedReportMixin, APIView):
@@ -105,17 +87,9 @@ class DashboardStatsAPIView(BusinessScopedReportMixin, APIView):
         if not business:
             return Response(self._empty_payload())
 
-        all_invoices = (
-            Invoice.objects.filter(business=business)
-            .select_related("business")
-            .prefetch_related("items", "receipts")
-        )
-        paid_invoices = all_invoices.filter(status="paid")
-        expenses = Expense.objects.filter(business=business).select_related("category")
-
-        total_income = paid_invoices.aggregate(total=Sum("total_amount"))["total"] or 0
-        total_expenses = expenses.aggregate(total=Sum("total_amount"))["total"] or 0
-        today = timezone.localdate()
+        data = dashboard_data(business)
+        all_invoices, expenses = data["invoices"], data["expenses"]
+        total_income, total_expenses = data["total_income"], data["total_expenses"]
 
         recent_invoices = InvoiceSerializer(
             all_invoices.order_by("-created_at")[:5],
@@ -133,12 +107,9 @@ class DashboardStatsAPIView(BusinessScopedReportMixin, APIView):
                 "total_income": float(total_income),
                 "total_expenses": float(total_expenses),
                 "net_profit": float(total_income - total_expenses),
-                "pending_invoices": all_invoices.filter(status__in=["sent", "partial"]).count(),
-                "overdue_invoices": all_invoices.filter(
-                    ~Q(status="paid"),
-                    due_date__lt=today,
-                ).count(),
-                "total_clients": all_invoices.values("client_email").distinct().count(),
+                "pending_invoices": data["pending_invoices"],
+                "overdue_invoices": data["overdue_invoices"],
+                "total_clients": data["total_clients"],
                 "recent_invoices": recent_invoices,
                 "recent_expenses": recent_expenses,
                 "monthly_trends": monthly_reports_for_year(

@@ -1,0 +1,1 @@
+"""Tax application use cases."""
