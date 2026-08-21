@@ -1,11 +1,10 @@
-from decimal import Decimal
-
 from rest_framework import serializers
-from django.db import IntegrityError, transaction
 
 from business.models import Business
 
-from .models import Invoice, InvoiceItem, Receipt, generate_invoice_number
+from .application.pricing import calculate_invoice_totals
+from .application.services import create_invoice, update_invoice
+from .models import Invoice, InvoiceItem, Receipt
 
 
 class InvoiceItemSerializer(serializers.ModelSerializer):
@@ -79,18 +78,6 @@ class InvoiceSerializer(serializers.ModelSerializer):
             "updated_at",
         ]
 
-    def _compute_totals(self, items, business):
-        subtotal = Decimal("0.00")
-        for item in items:
-            quantity = Decimal(str(item["quantity"]))
-            unit_price = Decimal(str(item["unit_price"]))
-            subtotal += quantity * unit_price
-
-        tax_rate = Decimal(str(business.tax_rate)) if business else Decimal("0.00")
-        tax_amount = (subtotal * tax_rate) / Decimal("100")
-        total_amount = subtotal + tax_amount
-        return subtotal, tax_amount, total_amount
-
     def validate(self, data):
         items = data.get("items")
         business = data.get("business")
@@ -115,60 +102,20 @@ class InvoiceSerializer(serializers.ModelSerializer):
         if items is None:
             raise serializers.ValidationError({"items": "This field is required."})
 
-        subtotal, tax_amount, total_amount = self._compute_totals(items, business)
-        data["subtotal"] = subtotal
-        data["tax_amount"] = tax_amount
-        data["total_amount"] = total_amount
+        totals = calculate_invoice_totals(items, business.tax_rate)
+        data["subtotal"] = totals.subtotal
+        data["tax_amount"] = totals.tax_amount
+        data["total_amount"] = totals.total_amount
         return data
 
     def create(self, validated_data):
         items_data = validated_data.pop("items")
-        business = validated_data["business"]
-
-        with transaction.atomic():
-            Business.objects.select_for_update().get(pk=business.pk)
-            for attempt in range(3):
-                validated_data["invoice_number"] = generate_invoice_number(business)
-                try:
-                    invoice = Invoice.objects.create(**validated_data)
-                    break
-                except IntegrityError:
-                    if attempt == 2:
-                        raise
-
-        for item in items_data:
-            total = Decimal(str(item["quantity"])) * Decimal(str(item["unit_price"]))
-            InvoiceItem.objects.create(
-                invoice=invoice,
-                description=item["description"],
-                quantity=item["quantity"],
-                unit_price=item["unit_price"],
-                total=total,
-            )
-
-        return invoice
+        return create_invoice(validated_data=validated_data, items_data=items_data)
 
     def update(self, instance, validated_data):
         items_data = validated_data.pop("items", None)
 
-        for attr, value in validated_data.items():
-            setattr(instance, attr, value)
-
-        instance.save()
-
-        if items_data is not None:
-            instance.items.all().delete()
-            for item in items_data:
-                total = Decimal(str(item["quantity"])) * Decimal(str(item["unit_price"]))
-                InvoiceItem.objects.create(
-                    invoice=instance,
-                    description=item["description"],
-                    quantity=item["quantity"],
-                    unit_price=item["unit_price"],
-                    total=total,
-                )
-
-        return instance
+        return update_invoice(invoice=instance, validated_data=validated_data, items_data=items_data)
 
     def get_has_receipt(self, obj):
         return obj.receipts.exists()
