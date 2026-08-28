@@ -38,6 +38,10 @@ class InvoiceSerializer(serializers.ModelSerializer):
     balance_due = serializers.SerializerMethodField()
     business_id = serializers.PrimaryKeyRelatedField(queryset=Business.objects.all(), source="business")
 
+    # The create form intentionally allows invoices without a client email.
+    # Keep that existing product behavior explicit at the API boundary.
+    client_email = serializers.EmailField(required=False, allow_blank=True)
+
     class Meta:
         model = Invoice
         fields = [
