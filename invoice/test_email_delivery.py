@@ -13,7 +13,9 @@ from rest_framework.test import APIClient
 
 from business.models import Business
 from invoice.email_utils import (
+    _brevo_failure,
     _sendgrid_failure,
+    BREVO_PROVIDER,
     SENDGRID_PROVIDER,
     SMTP_PROVIDER,
     EmailConfigurationError,
@@ -36,6 +38,12 @@ SENDGRID_SETTINGS = dict(
     SENDGRID_FROM_EMAIL="billing@example.com",
 )
 
+BREVO_SETTINGS = dict(
+    EMAIL_PROVIDER=BREVO_PROVIDER,
+    BREVO_API_KEY="xkeysib-test-key",
+    BREVO_FROM_EMAIL="billing@example.com",
+)
+
 SMTP_SETTINGS = dict(
     EMAIL_PROVIDER=SMTP_PROVIDER,
     EMAIL_HOST="smtp.example.com",
@@ -51,6 +59,8 @@ UNCONFIGURED_SETTINGS = dict(
     EMAIL_PROVIDER="",
     SENDGRID_API_KEY="",
     SENDGRID_FROM_EMAIL="",
+    BREVO_API_KEY="",
+    BREVO_FROM_EMAIL="",
     DEFAULT_FROM_EMAIL="",
     EMAIL_HOST="",
     EMAIL_HOST_USER="",
@@ -74,8 +84,8 @@ class FakeResponse:
 
 
 class ProviderSelectionTests(TestCase):
-    @override_settings(EMAIL_PROVIDER="", SENDGRID_API_KEY="")
-    def test_defaults_to_smtp_without_sendgrid_key(self):
+    @override_settings(EMAIL_PROVIDER="", SENDGRID_API_KEY="", BREVO_API_KEY="")
+    def test_defaults_to_smtp_without_http_provider_key(self):
         self.assertEqual(resolve_provider(), SMTP_PROVIDER)
 
     @override_settings(EMAIL_PROVIDER="", SENDGRID_API_KEY="SG.key")
@@ -100,6 +110,26 @@ class ConfigurationValidationTests(TestCase):
     @override_settings(EMAIL_PROVIDER=SENDGRID_PROVIDER, SENDGRID_API_KEY="", SENDGRID_FROM_EMAIL="a@b.com")
     def test_sendgrid_without_api_key_is_rejected(self):
         with self.assertRaisesMessage(EmailConfigurationError, "SENDGRID_API_KEY is not set"):
+            validate_email_configuration()
+
+    @override_settings(
+        EMAIL_PROVIDER=SENDGRID_PROVIDER,
+        SENDGRID_API_KEY="",
+        BREVO_API_KEY="xkeysib-key",
+    )
+    def test_names_the_provider_that_still_has_a_key(self):
+        with self.assertRaisesMessage(
+            EmailConfigurationError,
+            "EMAIL_PROVIDER=brevo would use it",
+        ):
+            validate_email_configuration()
+
+    @override_settings(EMAIL_PROVIDER=SENDGRID_PROVIDER, SENDGRID_API_KEY="")
+    def test_missing_key_error_lists_the_supported_providers(self):
+        with self.assertRaisesMessage(
+            EmailConfigurationError,
+            "set EMAIL_PROVIDER to one of: smtp, sendgrid, brevo",
+        ):
             validate_email_configuration()
 
     @override_settings(EMAIL_PROVIDER=SENDGRID_PROVIDER, SENDGRID_API_KEY="SG.key", SENDGRID_FROM_EMAIL="", DEFAULT_FROM_EMAIL="")
@@ -590,3 +620,255 @@ class SendGridSenderDiagnosticsTests(TestCase):
         report = email_diagnostics()
 
         self.assertNotIn("Single Sender Verification", " ".join(report["warnings"]))
+
+
+class BrevoProviderSelectionTests(TestCase):
+    @override_settings(EMAIL_PROVIDER="", SENDGRID_API_KEY="", BREVO_API_KEY="xkeysib-key")
+    def test_auto_selects_brevo_when_only_its_key_is_present(self):
+        self.assertEqual(resolve_provider(), BREVO_PROVIDER)
+
+    @override_settings(
+        EMAIL_PROVIDER="",
+        SENDGRID_API_KEY="SG.key",
+        BREVO_API_KEY="xkeysib-key",
+    )
+    def test_sendgrid_keeps_precedence_when_both_keys_are_present(self):
+        self.assertEqual(resolve_provider(), SENDGRID_PROVIDER)
+
+    @override_settings(
+        EMAIL_PROVIDER=BREVO_PROVIDER,
+        SENDGRID_API_KEY="SG.key",
+        BREVO_API_KEY="xkeysib-key",
+    )
+    def test_explicit_brevo_wins_over_sendgrid_credentials(self):
+        self.assertEqual(resolve_provider(), BREVO_PROVIDER)
+
+
+class BrevoConfigurationValidationTests(TestCase):
+    @override_settings(**BREVO_SETTINGS)
+    def test_brevo_configuration_is_valid(self):
+        self.assertEqual(validate_email_configuration(), BREVO_PROVIDER)
+
+    @override_settings(EMAIL_PROVIDER=BREVO_PROVIDER, BREVO_API_KEY="", BREVO_FROM_EMAIL="a@b.com")
+    def test_brevo_without_api_key_is_rejected(self):
+        with self.assertRaisesMessage(EmailConfigurationError, "BREVO_API_KEY is not set"):
+            validate_email_configuration()
+
+    @override_settings(
+        EMAIL_PROVIDER=BREVO_PROVIDER,
+        BREVO_API_KEY="xkeysib-key",
+        BREVO_FROM_EMAIL="",
+        DEFAULT_FROM_EMAIL="",
+    )
+    def test_brevo_without_sender_is_rejected(self):
+        with self.assertRaisesMessage(EmailConfigurationError, "BREVO_FROM_EMAIL"):
+            validate_email_configuration()
+
+
+class BrevoDeliveryTests(TestCase):
+    @override_settings(**BREVO_SETTINGS)
+    def test_send_email_message_uses_brevo_http_api(self):
+        with mock.patch("invoice.email_utils.urlrequest.urlopen", return_value=FakeResponse()) as urlopen:
+            send_email_message(subject="Hello", recipients=["client@example.com"], text_content="Body")
+
+        request = urlopen.call_args.args[0]
+        self.assertEqual(request.full_url, "https://api.brevo.com/v3/smtp/email")
+        self.assertEqual(request.get_header("Api-key"), "xkeysib-test-key")
+        payload = json.loads(request.data.decode("utf-8"))
+        self.assertEqual(payload["sender"], {"email": "billing@example.com"})
+        self.assertEqual(payload["to"], [{"email": "client@example.com"}])
+        self.assertEqual(payload["subject"], "Hello")
+        self.assertEqual(payload["textContent"], "Body")
+        self.assertNotIn("htmlContent", payload)
+
+    @override_settings(**BREVO_SETTINGS)
+    def test_html_body_and_attachments_are_sent(self):
+        attachments = [("INV-1.pdf", b"%PDF-1.4 body", "application/pdf")]
+        with mock.patch("invoice.email_utils.urlrequest.urlopen", return_value=FakeResponse()) as urlopen:
+            send_email_message(
+                subject="Hello",
+                recipients=["client@example.com"],
+                text_content="Body",
+                html_content="<p>Body</p>",
+                attachments=attachments,
+            )
+
+        payload = json.loads(urlopen.call_args.args[0].data.decode("utf-8"))
+        self.assertEqual(payload["htmlContent"], "<p>Body</p>")
+        self.assertEqual(
+            payload["attachment"],
+            [{"name": "INV-1.pdf", "content": base64.b64encode(b"%PDF-1.4 body").decode("ascii")}],
+        )
+
+    @override_settings(**BREVO_SETTINGS)
+    def test_empty_text_body_is_omitted(self):
+        with mock.patch("invoice.email_utils.urlrequest.urlopen", return_value=FakeResponse()) as urlopen:
+            send_email_message(subject="Hello", recipients=["client@example.com"], html_content="<p>Hi</p>")
+
+        payload = json.loads(urlopen.call_args.args[0].data.decode("utf-8"))
+        self.assertNotIn("textContent", payload)
+        self.assertEqual(payload["htmlContent"], "<p>Hi</p>")
+
+    @override_settings(**BREVO_SETTINGS)
+    def test_brevo_http_error_is_reported(self):
+        error = urlerror.HTTPError(
+            "https://api.brevo.com/v3/smtp/email",
+            401,
+            "Unauthorized",
+            {},
+            BytesIO(b'{"code":"unauthorized","message":"Key not found"}'),
+        )
+        with mock.patch("invoice.email_utils.urlrequest.urlopen", side_effect=error):
+            with self.assertRaises(InvoiceEmailError) as ctx:
+                send_email_message(subject="Hello", recipients=["client@example.com"], text_content="Body")
+
+        message = str(ctx.exception)
+        self.assertIn("Brevo rejected the message (401): Key not found", message)
+        self.assertIn("BREVO_API_KEY was rejected", message)
+
+    @override_settings(**BREVO_SETTINGS)
+    def test_brevo_connection_error_is_reported(self):
+        with mock.patch("invoice.email_utils.urlrequest.urlopen", side_effect=urlerror.URLError("dns")):
+            with self.assertRaisesMessage(InvoiceEmailError, "Could not reach the Brevo API"):
+                send_email_message(subject="Hello", recipients=["client@example.com"], text_content="Body")
+
+
+class BrevoErrorTranslationTests(SimpleTestCase):
+    def test_unverified_sender_is_explained(self):
+        body = '{"code":"invalid_parameter","message":"sender is not valid"}'
+        message = _brevo_failure(400, body)
+
+        self.assertIn("Brevo rejected the message (400): sender is not valid", message)
+        self.assertIn("BREVO_FROM_EMAIL must be a sender verified in Brevo", message)
+
+    def test_sending_limit_is_explained(self):
+        message = _brevo_failure(400, '{"message":"You have reached your daily sending limit"}')
+
+        self.assertIn("cannot send right now", message)
+        self.assertIn("Brevo dashboard", message)
+
+    def test_unmapped_401_falls_back_to_the_key_hint(self):
+        message = _brevo_failure(401, '{"message":"authentication not found in headers"}')
+
+        self.assertIn("xkeysib-", message)
+
+    def test_json_envelope_is_reduced_to_brevos_own_message(self):
+        message = _brevo_failure(403, '{"code":"unauthorized","message":"Not enough credits"}')
+
+        self.assertIn("(403): Not enough credits", message)
+        self.assertNotIn('{"code"', message)
+
+
+class BrevoProbeTests(TestCase):
+    @override_settings(**BREVO_SETTINGS)
+    def test_probe_reports_the_email_allowance(self):
+        body = b'{"email":"billing@example.com","emailCredits":269}'
+        with mock.patch("invoice.email_utils.urlrequest.urlopen", return_value=FakeResponse(status=200, body=body)):
+            report = probe_email_provider()
+
+        self.assertTrue(report["ok"])
+        self.assertEqual(report["email_credits"], 269)
+        self.assertIn("269", report["detail"])
+
+    @override_settings(**BREVO_SETTINGS)
+    def test_probe_falls_back_to_the_plan_allowance(self):
+        body = b'{"plan":[{"type":"free","credits":300,"creditsType":"sendLimit"}]}'
+        with mock.patch("invoice.email_utils.urlrequest.urlopen", return_value=FakeResponse(status=200, body=body)):
+            report = probe_email_provider()
+
+        self.assertTrue(report["ok"])
+        self.assertEqual(report["email_credits"], 300)
+
+    @override_settings(**BREVO_SETTINGS)
+    def test_probe_ignores_sms_allowances(self):
+        body = b'{"plan":[{"type":"free","credits":0,"creditsType":"smsLimit"}]}'
+        with mock.patch("invoice.email_utils.urlrequest.urlopen", return_value=FakeResponse(status=200, body=body)):
+            report = probe_email_provider()
+
+        self.assertTrue(report["ok"])
+        self.assertIsNone(report["email_credits"])
+
+    @override_settings(**BREVO_SETTINGS)
+    def test_key_without_account_permission_does_not_fail_the_probe(self):
+        error = urlerror.HTTPError(
+            "https://api.brevo.com/v3/account",
+            403,
+            "Forbidden",
+            {},
+            BytesIO(b'{"code":"permission_denied","message":"You are not allowed"}'),
+        )
+        with mock.patch("invoice.email_utils.urlrequest.urlopen", side_effect=error):
+            report = probe_email_provider()
+
+        self.assertTrue(report["ok"])
+        self.assertIn("Account permission", report["detail"])
+
+    @override_settings(**BREVO_SETTINGS)
+    def test_probe_reports_a_rejected_key(self):
+        error = urlerror.HTTPError(
+            "https://api.brevo.com/v3/account",
+            401,
+            "Unauthorized",
+            {},
+            BytesIO(b'{"code":"unauthorized","message":"Key not found"}'),
+        )
+        with mock.patch("invoice.email_utils.urlrequest.urlopen", side_effect=error):
+            report = probe_email_provider()
+
+        self.assertFalse(report["ok"])
+        self.assertIn("Key not found", report["detail"])
+
+    @override_settings(**BREVO_SETTINGS)
+    def test_probe_reports_an_unreachable_api(self):
+        with mock.patch("invoice.email_utils.urlrequest.urlopen", side_effect=urlerror.URLError("dns")):
+            report = probe_email_provider()
+
+        self.assertFalse(report["ok"])
+        self.assertIn("Could not reach the Brevo API", report["detail"])
+
+
+class BrevoDiagnosticsTests(TestCase):
+    @override_settings(**{**BREVO_SETTINGS, "SENDGRID_API_KEY": "", "SENDGRID_FROM_EMAIL": ""})
+    def test_reports_brevo_credentials_without_leaking_them(self):
+        report = email_diagnostics()
+
+        self.assertTrue(report["ready"])
+        self.assertEqual(report["provider"], BREVO_PROVIDER)
+        self.assertTrue(report["brevo_api_key_configured"])
+        self.assertEqual(report["brevo_api_key_prefix"], "xke")
+        self.assertEqual(report["brevo_from_email"], "billing@example.com")
+        self.assertNotIn("xkeysib-test-key", str(report))
+
+    @override_settings(
+        EMAIL_PROVIDER="",
+        SENDGRID_API_KEY="SG.key",
+        SENDGRID_FROM_EMAIL="billing@example.com",
+        BREVO_API_KEY="xkeysib-key",
+        BREVO_FROM_EMAIL="billing@example.com",
+    )
+    def test_warns_when_more_than_one_http_provider_is_configured(self):
+        report = email_diagnostics()
+
+        warnings = " ".join(report["warnings"])
+        self.assertIn("More than one HTTP provider key is configured", warnings)
+        self.assertIn("Set EMAIL_PROVIDER", warnings)
+
+    @override_settings(**{**BREVO_SETTINGS, "BREVO_FROM_EMAIL": "vinnbalvins@gmail.com"})
+    def test_consumer_mailbox_sender_is_flagged_for_brevo(self):
+        report = email_diagnostics()
+
+        warnings = " ".join(report["warnings"])
+        self.assertIn("BREVO_FROM_EMAIL is vinnbalvins@gmail.com", warnings)
+        self.assertIn("Domains & Dedicated IPs", warnings)
+
+    @override_settings(**{**BREVO_SETTINGS, "BREVO_API_KEY": "SG.wrong-provider-key"})
+    def test_flags_keys_without_the_brevo_prefix(self):
+        report = email_diagnostics()
+
+        self.assertIn("xkeysib-", " ".join(report["warnings"]))
+
+    @override_settings(**BREVO_SETTINGS)
+    def test_clean_brevo_key_is_not_flagged(self):
+        report = email_diagnostics()
+
+        self.assertNotIn("xkeysib-", " ".join(report["warnings"]))

@@ -350,6 +350,10 @@ DEFAULT_FROM_EMAIL = _default_from_email
 EMAIL_PROVIDER = env("EMAIL_PROVIDER", default="").strip().lower()
 SENDGRID_API_KEY = env("SENDGRID_API_KEY", default="")
 SENDGRID_FROM_EMAIL = env("SENDGRID_FROM_EMAIL", default=DEFAULT_FROM_EMAIL)
+# Brevo (https://brevo.com) is the second HTTP provider: 300 emails/day on the
+# free plan, and it verifies individual sender addresses rather than domains.
+BREVO_API_KEY = env("BREVO_API_KEY", default="")
+BREVO_FROM_EMAIL = env("BREVO_FROM_EMAIL", default=DEFAULT_FROM_EMAIL)
 
 BACKEND_BASE_URL = env("BACKEND_BASE_URL", default="http://localhost:8000")
 WHATSAPP_PROVIDER = env("WHATSAPP_PROVIDER", default="mock")

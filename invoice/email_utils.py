@@ -1,13 +1,14 @@
 """Email delivery adapters shared by every outbound app email.
 
-Two providers are supported:
+Three providers are supported:
 
 * ``sendgrid`` - HTTP API, required on hosts that block outbound SMTP.
+* ``brevo``    - HTTP API, the alternative when a SendGrid account cannot send.
 * ``smtp``     - classic SMTP relay, the default for local development.
 
 ``settings.EMAIL_PROVIDER`` selects the provider explicitly. When it is left
-blank the provider is auto-selected: SendGrid when ``SENDGRID_API_KEY`` is
-configured, SMTP otherwise.
+blank the provider is auto-selected: the first HTTP provider holding an API key
+in ``settings.HTTP_PROVIDERS`` order, SMTP otherwise.
 
 Values for the provider come from environment variables, which are frequently
 pasted into dashboard textareas. They are sanitised on read (surrounding
@@ -37,18 +38,40 @@ from .utils import generate_invoice_pdf
 logger = logging.getLogger(__name__)
 
 SMTP_PROVIDER = "smtp"
+BREVO_PROVIDER = "brevo"
 SENDGRID_PROVIDER = "sendgrid"
-SUPPORTED_PROVIDERS = (SMTP_PROVIDER, SENDGRID_PROVIDER)
+
+# Settings and display name per HTTP provider. Insertion order is also the
+# auto-selection precedence used when EMAIL_PROVIDER is left empty, so SendGrid
+# keeps winning for deployments that already hold its key.
+HTTP_PROVIDERS = {
+    SENDGRID_PROVIDER: {
+        "api_key": "SENDGRID_API_KEY",
+        "from_email": "SENDGRID_FROM_EMAIL",
+        "label": "SendGrid",
+    },
+    BREVO_PROVIDER: {
+        "api_key": "BREVO_API_KEY",
+        "from_email": "BREVO_FROM_EMAIL",
+        "label": "Brevo",
+    },
+}
+
+SUPPORTED_PROVIDERS = (SMTP_PROVIDER,) + tuple(HTTP_PROVIDERS)
 
 SENDGRID_SEND_URL = "https://api.sendgrid.com/v3/mail/send"
 SENDGRID_SCOPES_URL = "https://api.sendgrid.com/v3/scopes"
 SENDGRID_CREDITS_URL = "https://api.sendgrid.com/v3/user/credits"
 
+BREVO_SEND_URL = "https://api.brevo.com/v3/smtp/email"
+BREVO_ACCOUNT_URL = "https://api.brevo.com/v3/account"
+BREVO_KEY_PREFIX = "xkeysib-"
+
 SMTP_EGRESS_BLOCKED_HINT = (
     "Render blocks outbound SMTP traffic on ports 25, 465 and 587 for free web "
     "services, so SMTP delivery cannot work there. Configure an HTTP email API "
-    "instead (SENDGRID_API_KEY + SENDGRID_FROM_EMAIL) or move the service to a "
-    "paid instance type."
+    "instead (SENDGRID_API_KEY or BREVO_API_KEY, each with its own "
+    "<PROVIDER>_FROM_EMAIL) or move the service to a paid instance type."
 )
 
 SMTP_AUTH_HINT = (
@@ -124,34 +147,74 @@ def _smtp_unreachable_error(exc):
     return message
 
 
+def _provider_api_key(provider):
+    return _setting(HTTP_PROVIDERS[provider]["api_key"])
+
+
+def _provider_sender(provider):
+    """From address for an HTTP provider, falling back to the shared default."""
+    for name in (HTTP_PROVIDERS[provider]["from_email"], "DEFAULT_FROM_EMAIL"):
+        value = _setting(name)
+        if value:
+            return value
+    return ""
+
+
+def configured_http_providers():
+    """HTTP providers holding an API key, in auto-selection order."""
+    return [name for name in HTTP_PROVIDERS if _provider_api_key(name)]
+
+
+def _sender_for(provider):
+    """From address for the active transport."""
+    if provider in HTTP_PROVIDERS:
+        return _provider_sender(provider)
+    return _setting("DEFAULT_FROM_EMAIL") or _setting("EMAIL_HOST_USER")
+
+
 def resolve_provider():
-    """Return the provider to use: ``sendgrid`` or ``smtp``."""
+    """Return the provider to use: ``sendgrid``, ``brevo`` or ``smtp``."""
     configured = str(_setting("EMAIL_PROVIDER")).strip().lower()
     if configured:
         if configured not in SUPPORTED_PROVIDERS:
             raise EmailConfigurationError(
                 f"EMAIL_PROVIDER='{configured}' is not supported. "
-                f"Use one of: {', '.join(SUPPORTED_PROVIDERS)}."
+                "Use one of: "
+                + ", ".join(SUPPORTED_PROVIDERS)
+                + "."
             )
         return configured
-    return SENDGRID_PROVIDER if _setting("SENDGRID_API_KEY") else SMTP_PROVIDER
+    available = configured_http_providers()
+    return available[0] if available else SMTP_PROVIDER
 
 
 def validate_email_configuration():
     """Return the active provider, raising when it cannot be used to send mail."""
     provider = resolve_provider()
-    sender = _setting("SENDGRID_FROM_EMAIL") or _setting("DEFAULT_FROM_EMAIL")
 
-    if provider == SENDGRID_PROVIDER:
-        if not _setting("SENDGRID_API_KEY"):
-            raise EmailConfigurationError(
-                "EMAIL_PROVIDER is 'sendgrid' but SENDGRID_API_KEY is not set. Add the "
-                "SendGrid API key, or remove EMAIL_PROVIDER to fall back to SMTP."
+    if provider in HTTP_PROVIDERS:
+        names = HTTP_PROVIDERS[provider]
+        if not _provider_api_key(provider):
+            message = (
+                f"EMAIL_PROVIDER is '{provider}' but {names['api_key']} is not set. "
+                f"Add the {names['label']} API key, or set EMAIL_PROVIDER to one of: "
+                + ", ".join(SUPPORTED_PROVIDERS)
+                + "."
             )
-        if not sender:
+            # Naming a provider whose key is absent is the usual mistake when moving
+            # between providers, so point at whichever one is actually ready to send.
+            others = [name for name in configured_http_providers() if name != provider]
+            if others:
+                message += (
+                    f" {HTTP_PROVIDERS[others[0]]['label']} already has a key configured,"
+                    f" so EMAIL_PROVIDER={others[0]} would use it."
+                )
+            raise EmailConfigurationError(message)
+        if not _provider_sender(provider):
             raise EmailConfigurationError(
-                "Set SENDGRID_FROM_EMAIL to a sender verified in SendGrid (or set "
-                "DEFAULT_FROM_EMAIL) so outbound email has a valid From address."
+                f"Set {names['from_email']} to a sender verified with "
+                f"{names['label']} (or set DEFAULT_FROM_EMAIL) so outbound email has "
+                "a valid From address."
             )
         return provider
 
@@ -165,8 +228,9 @@ def validate_email_configuration():
         message = f"SMTP email delivery is selected but {' and '.join(missing)} {verbs} not set."
         if not str(_setting("EMAIL_PROVIDER")).strip():
             message += (
-                " EMAIL_PROVIDER is not set and no SENDGRID_API_KEY is configured, so SMTP "
-                "is used by default; configure SENDGRID_API_KEY for HTTP delivery."
+                " EMAIL_PROVIDER is not set and no HTTP provider key is configured, so "
+                "SMTP is used by default; configure SENDGRID_API_KEY or BREVO_API_KEY "
+                "for HTTP delivery."
             )
         if _is_render():
             message = f"{message} {SMTP_EGRESS_BLOCKED_HINT}"
@@ -209,10 +273,11 @@ SENDGRID_HINTS = (
 
 
 def _summarise_provider_detail(body):
-    """Reduce a SendGrid error envelope to the messages SendGrid wrote.
+    """Reduce a provider error envelope to the sentence the provider wrote.
 
-    SendGrid answers with {"errors": [{"message": ...}]}; showing that envelope
-    verbatim in a toast buries the one sentence that matters.
+    SendGrid answers with {"errors": [{"message": ...}]} and Brevo with
+    {"message": ..., "code": ...}; showing either envelope verbatim in a toast
+    buries the one sentence that matters.
     """
     raw = (body or "").strip()
     if not raw:
@@ -221,28 +286,68 @@ def _summarise_provider_detail(body):
         payload = json.loads(raw)
     except ValueError:
         return raw
+    if not isinstance(payload, dict):
+        return raw
     messages = [
         entry["message"]
         for entry in (payload.get("errors") or [])
         if isinstance(entry, dict) and entry.get("message")
     ]
+    if not messages and payload.get("message"):
+        messages = [payload["message"]]
     return "; ".join(messages) if messages else raw
+
+
+BREVO_KEY_HINT = (
+    "BREVO_API_KEY was rejected: check the key is current, copied without stray "
+    "whitespace, and starts with xkeysib-."
+)
+
+BREVO_HINTS = (
+    (
+        ("sender", "from address", "not valid", "not verified", "not authorised",
+         "not authorized"),
+        "BREVO_FROM_EMAIL must be a sender verified in Brevo (Senders, Domains & "
+        "Dedicated IPs -> Senders); Brevo emails that address a confirmation link.",
+    ),
+    (
+        ("quota", "credit", "sending limit", "daily limit", "blocked", "suspended"),
+        "The Brevo account cannot send right now (daily quota, plan limit or "
+        "suspension). Check the plan and the sending limits in the Brevo dashboard.",
+    ),
+)
+
+
+def _provider_failure(label, status, body, hints, key_hint):
+    """Build a user-facing delivery error from a provider error body."""
+    detail = _summarise_provider_detail(body)
+    lowered = detail.lower()
+    hint = next((text for needles, text in hints if any(n in lowered for n in needles)), "")
+    if not hint and status in (401, 403):
+        hint = key_hint
+    message = f"{label} rejected the message ({status}): {detail}"
+    if not message.endswith((".", "!", "?")):
+        message = f"{message}."
+    return f"{message} {hint}" if hint else message
 
 
 def _sendgrid_failure(status, body):
     """Translate a SendGrid error payload into an actionable message."""
-    detail = _summarise_provider_detail(body)
-    lowered = detail.lower()
-    hint = next((text for needles, text in SENDGRID_HINTS if any(n in lowered for n in needles)), "")
-    if not hint and status in (401, 403):
-        hint = (
+    return _provider_failure(
+        "SendGrid",
+        status,
+        body,
+        SENDGRID_HINTS,
+        (
             "The API key was rejected: check SENDGRID_API_KEY is current, has no stray "
             "whitespace, and grants Mail Send (or Full Access)."
-        )
-    message = f"SendGrid rejected the message ({status}): {detail}"
-    if not message.endswith((".", "!", "?")):
-        message = f"{message}."
-    return f"{message} {hint}" if hint else message
+        ),
+    )
+
+
+def _brevo_failure(status, body):
+    """Translate a Brevo error payload into an actionable message."""
+    return _provider_failure("Brevo", status, body, BREVO_HINTS, BREVO_KEY_HINT)
 
 
 def _read_error_body(exc):
@@ -305,6 +410,50 @@ def _send_via_sendgrid(*, subject, text_content, html_content, recipients, attac
         raise InvoiceEmailError(f"Could not reach the SendGrid API: {exc}") from exc
 
 
+def _send_via_brevo(*, subject, text_content, html_content, recipients, attachments, from_email):
+    payload = {
+        "sender": {"email": from_email},
+        "to": [{"email": address} for address in recipients],
+        "subject": subject,
+        "replyTo": {"email": from_email},
+    }
+    # Brevo wants at least one body part and rejects an empty one, so omit blanks.
+    if text_content:
+        payload["textContent"] = text_content
+    if html_content:
+        payload["htmlContent"] = html_content
+    if attachments:
+        payload["attachment"] = [
+            {
+                "name": filename,
+                "content": base64.b64encode(content).decode("ascii"),
+            }
+            for filename, content, mimetype in attachments
+        ]
+
+    request = urlrequest.Request(
+        BREVO_SEND_URL,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "api-key": _provider_api_key(BREVO_PROVIDER),
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        },
+        method="POST",
+    )
+
+    try:
+        with urlrequest.urlopen(request, timeout=_timeout()) as response:
+            if response.status >= 400:
+                body = _read_error_body(response)
+                raise InvoiceEmailError(_brevo_failure(response.status, body))
+    except urlerror.HTTPError as exc:
+        body = _read_error_body(exc)
+        raise InvoiceEmailError(_brevo_failure(exc.code, body)) from exc
+    except (urlerror.URLError, TimeoutError, OSError) as exc:
+        raise InvoiceEmailError(f"Could not reach the Brevo API: {exc}") from exc
+
+
 def _send_via_smtp(*, subject, text_content, html_content, recipients, attachments, from_email):
     email = EmailMultiAlternatives(
         subject=subject,
@@ -344,7 +493,7 @@ def send_email_message(*, subject, recipients, text_content="", html_content=Non
     if not addresses:
         raise EmailConfigurationError("No recipient address was provided for this email.")
 
-    sender = from_email or _setting("SENDGRID_FROM_EMAIL") or _setting("DEFAULT_FROM_EMAIL")
+    sender = from_email or _sender_for(provider)
     payload = {
         "subject": subject,
         "text_content": text_content or "",
@@ -357,6 +506,8 @@ def send_email_message(*, subject, recipients, text_content="", html_content=Non
     try:
         if provider == SENDGRID_PROVIDER:
             _send_via_sendgrid(**payload)
+        elif provider == BREVO_PROVIDER:
+            _send_via_brevo(**payload)
         else:
             _send_via_smtp(**payload)
     except InvoiceEmailError as exc:
@@ -473,18 +624,85 @@ def _probe_smtp():
     return {"ok": True, "detail": "SMTP connection and authentication succeeded."}
 
 
+def _brevo_email_credits(payload):
+    """Remaining email allowance reported by /v3/account, when identifiable."""
+    for key in ("emailCredits", "credits"):
+        value = payload.get(key)
+        if isinstance(value, int):
+            return value
+    for entry in payload.get("plan") or []:
+        if not isinstance(entry, dict):
+            continue
+        credits = entry.get("credits")
+        if isinstance(credits, int) and "sms" not in str(entry.get("creditsType", "")).lower():
+            return credits
+    return None
+
+
+def _probe_brevo():
+    request = urlrequest.Request(
+        BREVO_ACCOUNT_URL,
+        headers={"api-key": _provider_api_key(BREVO_PROVIDER), "Accept": "application/json"},
+        method="GET",
+    )
+    try:
+        with urlrequest.urlopen(request, timeout=_timeout()) as response:
+            payload = json.loads(response.read().decode("utf-8", errors="ignore"))
+    except urlerror.HTTPError as exc:
+        body = _read_error_body(exc)
+        detail = _summarise_provider_detail(body) if body else ""
+        if exc.code == 403:
+            # Brevo answers 401 for an unknown key, so 403 means the key is real but
+            # is not allowed to read account details (a transactional-only key, for
+            # example). Reporting that as a bad key would send setup astray.
+            return {
+                "ok": True,
+                "detail": (
+                    "Brevo accepted the API key but it may not read account details "
+                    "(HTTP 403), so the email allowance cannot be reported. Grant the "
+                    "Account permission on the key, or ignore this: sending is "
+                    "unaffected."
+                    + (f" Brevo said: {detail}." if detail else "")
+                ),
+            }
+        message = f"Brevo rejected the API key (HTTP {exc.code})."
+        if detail:
+            message = f"{message} {detail}"
+        return {"ok": False, "detail": message}
+    except (urlerror.URLError, TimeoutError, OSError) as exc:
+        return {"ok": False, "detail": f"Could not reach the Brevo API: {exc}"}
+    except ValueError as exc:
+        return {"ok": False, "detail": f"Brevo returned an unreadable response: {exc}"}
+
+    if not isinstance(payload, dict):
+        return {"ok": True, "detail": "Brevo accepted the API key."}
+
+    # Reported for information only: Brevo rejects each send with the real reason,
+    # and free plans meter per day rather than per credit, so a zero here is not
+    # proof that sending is broken.
+    credits = _brevo_email_credits(payload)
+    detail = "Brevo accepted the API key."
+    if credits is not None:
+        detail = f"{detail} Email allowance reported: {credits}."
+    return {"ok": True, "detail": detail, "email_credits": credits}
+
+
 def probe_email_provider(provider=None):
     """Open a real connection to the provider without sending a message."""
     provider = provider or validate_email_configuration()
     if provider == SENDGRID_PROVIDER:
         return _probe_sendgrid()
+    if provider == BREVO_PROVIDER:
+        return _probe_brevo()
     return _probe_smtp()
 
 
 def _sanitized_env_notes():
     """Report which provider env values carried stray whitespace or quotes."""
     notes = {}
-    for name in ("SENDGRID_API_KEY", "SENDGRID_FROM_EMAIL", "EMAIL_HOST_USER", "EMAIL_HOST", "EMAIL_PROVIDER"):
+    names = ["SENDGRID_API_KEY", "SENDGRID_FROM_EMAIL", "BREVO_API_KEY", "BREVO_FROM_EMAIL"]
+    names += ["EMAIL_HOST_USER", "EMAIL_HOST", "EMAIL_PROVIDER"]
+    for name in names:
         raw = os.environ.get(name)
         if raw and str(raw).strip() != _clean(raw):
             notes[name] = "Stray whitespace or quotes were removed when this value was loaded."
@@ -511,6 +729,11 @@ def email_diagnostics(probe=False):
         "sendgrid_api_key_prefix": (_setting("SENDGRID_API_KEY") or "")[:3] or None,
         "sendgrid_api_key_length": len(_setting("SENDGRID_API_KEY") or ""),
         "sendgrid_from_email": _setting("SENDGRID_FROM_EMAIL") or None,
+        "brevo_api_key_configured": bool(_setting("BREVO_API_KEY")),
+        "brevo_api_key_prefix": (_setting("BREVO_API_KEY") or "")[:3] or None,
+        "brevo_api_key_length": len(_setting("BREVO_API_KEY") or ""),
+        "brevo_from_email": _setting("BREVO_FROM_EMAIL") or None,
+        "http_providers_configured": configured_http_providers(),
         "env_values_sanitized": _sanitized_env_notes(),
         "smtp_host": _setting("EMAIL_HOST") or None,
         "smtp_port": getattr(settings, "EMAIL_PORT", None),
@@ -529,25 +752,39 @@ def email_diagnostics(probe=False):
     if info["on_render"] and info["provider"] == SMTP_PROVIDER and info["smtp_host"]:
         info["warnings"].append(SMTP_EGRESS_BLOCKED_HINT)
 
-    if info["provider"] == SENDGRID_PROVIDER and (info["smtp_user_configured"] or info["smtp_password_configured"]):
+    if len(info["http_providers_configured"]) > 1:
         info["warnings"].append(
-            "EMAIL_PROVIDER is set to sendgrid, so the EMAIL_HOST_* settings are not "
-            "used; mail is delivered through the SendGrid HTTP API."
+            "More than one HTTP provider key is configured ("
+            + ", ".join(info["http_providers_configured"])
+            + f"); {info['provider']} is used because it comes first. Set EMAIL_PROVIDER "
+            "to the provider you want so the choice is explicit."
         )
 
-    sender = info["sendgrid_from_email"] or info["default_from_email"]
-    if info["provider"] == SENDGRID_PROVIDER and sender and sender.rpartition("@")[2].lower() in FREEMAIL_DOMAINS:
+    if info["provider"] in HTTP_PROVIDERS and (info["smtp_user_configured"] or info["smtp_password_configured"]):
         info["warnings"].append(
-            f"SENDGRID_FROM_EMAIL is {sender}, a consumer mailbox. SendGrid only sends "
-            "from addresses it has verified, so add it under Settings -> Sender "
-            "Authentication -> Single Sender Verification and complete the confirmation "
-            "email, or send from a domain you have authenticated."
+            f"Email is delivered through the {HTTP_PROVIDERS[info['provider']]['label']} "
+            "HTTP API, so the EMAIL_HOST_* settings are not used."
+        )
+
+    sender = _provider_sender(info["provider"]) if info["provider"] in HTTP_PROVIDERS else ""
+    if sender and sender.rpartition("@")[2].lower() in FREEMAIL_DOMAINS:
+        info["warnings"].append(
+            f"{HTTP_PROVIDERS[info['provider']]['from_email']} is {sender}, a consumer "
+            "mailbox. Providers only send from an address they have verified, so add it "
+            "first: SendGrid under Settings -> Sender Authentication -> Single Sender "
+            "Verification, Brevo under Senders, Domains & Dedicated IPs -> Senders."
         )
 
     if info["sendgrid_api_key_configured"] and info["sendgrid_api_key_prefix"] != "SG.":
         info["warnings"].append(
             "SENDGRID_API_KEY does not start with SG.; SendGrid API keys use that "
             "prefix, so the value may be truncated or is a different credential."
+        )
+
+    if info["brevo_api_key_configured"] and not _setting("BREVO_API_KEY").startswith(BREVO_KEY_PREFIX):
+        info["warnings"].append(
+            f"BREVO_API_KEY does not start with {BREVO_KEY_PREFIX}; Brevo API keys use "
+            "that prefix, so the value may be truncated or is a different credential."
         )
 
     if probe:
