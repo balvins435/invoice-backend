@@ -305,6 +305,15 @@ BREVO_KEY_HINT = (
 
 BREVO_HINTS = (
     (
+        ("unrecognised ip", "unrecognized ip", "authorised ip", "authorized ip",
+         "authorised_ips", "authorized_ips"),
+        "Brevo is refusing this deployment outbound IP, not the API key. Remove the "
+        "restriction at https://app.brevo.com/security/authorised_ips, or allowlist "
+        "every outbound IP range of the Render service (Dashboard -> the service -> "
+        "Connect -> Outbound). Render shares those ranges with other services, so a "
+        "single address can stop working.",
+    ),
+    (
         ("sender", "from address", "not valid", "not verified", "not authorised",
          "not authorized"),
         "BREVO_FROM_EMAIL must be a sender verified in Brevo (Senders, Domains & "
@@ -318,11 +327,16 @@ BREVO_HINTS = (
 )
 
 
+def _provider_hint(detail, hints):
+    """First hint whose needles appear in the provider message, if any."""
+    lowered = (detail or "").lower()
+    return next((text for needles, text in hints if any(n in lowered for n in needles)), "")
+
+
 def _provider_failure(label, status, body, hints, key_hint):
     """Build a user-facing delivery error from a provider error body."""
     detail = _summarise_provider_detail(body)
-    lowered = detail.lower()
-    hint = next((text for needles, text in hints if any(n in lowered for n in needles)), "")
+    hint = _provider_hint(detail, hints)
     if not hint and status in (401, 403):
         hint = key_hint
     message = f"{label} rejected the message ({status}): {detail}"
@@ -348,6 +362,13 @@ def _sendgrid_failure(status, body):
 def _brevo_failure(status, body):
     """Translate a Brevo error payload into an actionable message."""
     return _provider_failure("Brevo", status, body, BREVO_HINTS, BREVO_KEY_HINT)
+
+
+def _response_header(response, name):
+    """Read a response header defensively: some transports fake responses in tests."""
+    headers = getattr(response, "headers", None)
+    getter = getattr(headers, "get", None)
+    return getter(name) if getter else None
 
 
 def _read_error_body(exc):
@@ -403,6 +424,7 @@ def _send_via_sendgrid(*, subject, text_content, html_content, recipients, attac
             if response.status >= 400:
                 body = _read_error_body(response)
                 raise InvoiceEmailError(_sendgrid_failure(response.status, body))
+            return _response_header(response, "X-Message-Id")
     except urlerror.HTTPError as exc:
         body = _read_error_body(exc)
         raise InvoiceEmailError(_sendgrid_failure(exc.code, body)) from exc
@@ -447,6 +469,7 @@ def _send_via_brevo(*, subject, text_content, html_content, recipients, attachme
             if response.status >= 400:
                 body = _read_error_body(response)
                 raise InvoiceEmailError(_brevo_failure(response.status, body))
+            return _brevo_message_id(response)
     except urlerror.HTTPError as exc:
         body = _read_error_body(exc)
         raise InvoiceEmailError(_brevo_failure(exc.code, body)) from exc
@@ -503,11 +526,12 @@ def send_email_message(*, subject, recipients, text_content="", html_content=Non
         "from_email": sender,
     }
 
+    message_id = None
     try:
         if provider == SENDGRID_PROVIDER:
-            _send_via_sendgrid(**payload)
+            message_id = _send_via_sendgrid(**payload)
         elif provider == BREVO_PROVIDER:
-            _send_via_brevo(**payload)
+            message_id = _send_via_brevo(**payload)
         else:
             _send_via_smtp(**payload)
     except InvoiceEmailError as exc:
@@ -521,7 +545,15 @@ def send_email_message(*, subject, recipients, text_content="", html_content=Non
         )
         raise
 
-    logger.info("Email delivered via %s (to=%s, subject=%r)", provider, addresses, subject)
+    # The provider id is the only handle for chasing a message that was accepted but
+    # never arrived, so record it alongside the send.
+    logger.info(
+        "Email accepted by %s (to=%s, subject=%r, provider_message_id=%s)",
+        provider,
+        addresses,
+        subject,
+        message_id or "unknown",
+    )
 
 
 def send_invoice_email(invoice):
@@ -639,6 +671,15 @@ def _brevo_email_credits(payload):
     return None
 
 
+def _brevo_message_id(response):
+    """Brevo echoes the id used to find this message in its delivery log."""
+    try:
+        payload = json.loads(response.read().decode("utf-8", errors="ignore"))
+    except (ValueError, AttributeError):
+        return None
+    return payload.get("messageId") if isinstance(payload, dict) else None
+
+
 def _probe_brevo():
     request = urlrequest.Request(
         BREVO_ACCOUNT_URL,
@@ -651,7 +692,8 @@ def _probe_brevo():
     except urlerror.HTTPError as exc:
         body = _read_error_body(exc)
         detail = _summarise_provider_detail(body) if body else ""
-        if exc.code == 403:
+        hint = _provider_hint(detail, BREVO_HINTS)
+        if exc.code == 403 and not hint:
             # Brevo answers 401 for an unknown key, so 403 means the key is real but
             # is not allowed to read account details (a transactional-only key, for
             # example). Reporting that as a bad key would send setup astray.
@@ -665,9 +707,11 @@ def _probe_brevo():
                     + (f" Brevo said: {detail}." if detail else "")
                 ),
             }
-        message = f"Brevo rejected the API key (HTTP {exc.code})."
+        message = f"Brevo refused the request (HTTP {exc.code})."
         if detail:
             message = f"{message} {detail}"
+        if hint:
+            message = f"{message} {hint}"
         return {"ok": False, "detail": message}
     except (urlerror.URLError, TimeoutError, OSError) as exc:
         return {"ok": False, "detail": f"Could not reach the Brevo API: {exc}"}

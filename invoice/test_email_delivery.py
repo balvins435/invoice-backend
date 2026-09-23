@@ -69,9 +69,10 @@ UNCONFIGURED_SETTINGS = dict(
 
 
 class FakeResponse:
-    def __init__(self, status=202, body=b""):
+    def __init__(self, status=202, body=b"", headers=None):
         self.status = status
         self._body = body
+        self.headers = headers or {}
 
     def read(self):
         return self._body
@@ -162,6 +163,17 @@ class EmailDeliveryTests(TestCase):
         request = urlopen.call_args.args[0]
         self.assertEqual(request.full_url, "https://api.sendgrid.com/v3/mail/send")
         self.assertEqual(request.get_header("Authorization"), "Bearer SG.test-key")
+
+    @override_settings(**SENDGRID_SETTINGS)
+    def test_sendgrid_message_id_is_logged_for_traceability(self):
+        response = FakeResponse(status=202, headers={"X-Message-Id": "sg-msg-123"})
+        with mock.patch("invoice.email_utils.urlrequest.urlopen", return_value=response):
+            with self.assertLogs("invoice.email_utils", level="INFO") as captured:
+                send_email_message(
+                    subject="Hello", recipients=["client@example.com"], text_content="Body"
+                )
+
+        self.assertIn("sg-msg-123", " ".join(captured.output))
 
     @override_settings(**SENDGRID_SETTINGS)
     def test_sendgrid_http_error_is_reported(self):
@@ -682,6 +694,27 @@ class BrevoDeliveryTests(TestCase):
         self.assertNotIn("htmlContent", payload)
 
     @override_settings(**BREVO_SETTINGS)
+    def test_brevo_message_id_is_logged_for_traceability(self):
+        response = FakeResponse(status=201, body=b'{"messageId":"<201x@brevo>"}')
+        with mock.patch("invoice.email_utils.urlrequest.urlopen", return_value=response):
+            with self.assertLogs("invoice.email_utils", level="INFO") as captured:
+                send_email_message(
+                    subject="Hello", recipients=["client@example.com"], text_content="Body"
+                )
+
+        self.assertIn("<201x@brevo>", " ".join(captured.output))
+
+    @override_settings(**BREVO_SETTINGS)
+    def test_missing_message_id_does_not_break_logging(self):
+        with mock.patch("invoice.email_utils.urlrequest.urlopen", return_value=FakeResponse(status=201)):
+            with self.assertLogs("invoice.email_utils", level="INFO") as captured:
+                send_email_message(
+                    subject="Hello", recipients=["client@example.com"], text_content="Body"
+                )
+
+        self.assertIn("provider_message_id=unknown", " ".join(captured.output))
+
+    @override_settings(**BREVO_SETTINGS)
     def test_html_body_and_attachments_are_sent(self):
         attachments = [("INV-1.pdf", b"%PDF-1.4 body", "application/pdf")]
         with mock.patch("invoice.email_utils.urlrequest.urlopen", return_value=FakeResponse()) as urlopen:
@@ -752,6 +785,14 @@ class BrevoErrorTranslationTests(SimpleTestCase):
 
         self.assertIn("xkeysib-", message)
 
+    def test_blocked_outbound_ip_is_not_reported_as_a_bad_key(self):
+        message = _brevo_failure(401, "{\"code\":\"unauthorized\",\"message\":\"We have detected you are using an unrecognised IP address 74.220.48.202. If you performed this action, make sure to add the new IP address in the link: https://app.brevo.com/security/authorised_ips\"}")
+
+        self.assertIn("refusing this deployment outbound IP", message)
+        self.assertIn("https://app.brevo.com/security/authorised_ips", message)
+        self.assertIn("Connect -> Outbound", message)
+        self.assertNotIn("BREVO_API_KEY was rejected", message)
+
     def test_json_envelope_is_reduced_to_brevos_own_message(self):
         message = _brevo_failure(403, '{"code":"unauthorized","message":"Not enough credits"}')
 
@@ -817,6 +858,22 @@ class BrevoProbeTests(TestCase):
 
         self.assertFalse(report["ok"])
         self.assertIn("Key not found", report["detail"])
+
+    @override_settings(**BREVO_SETTINGS)
+    def test_probe_explains_a_blocked_outbound_ip(self):
+        error = urlerror.HTTPError(
+            "https://api.brevo.com/v3/account",
+            401,
+            "Unauthorized",
+            {},
+            BytesIO("{\"code\":\"unauthorized\",\"message\":\"We have detected you are using an unrecognised IP address 74.220.48.202. If you performed this action, make sure to add the new IP address in the link: https://app.brevo.com/security/authorised_ips\"}".encode("utf-8")),
+        )
+        with mock.patch("invoice.email_utils.urlrequest.urlopen", side_effect=error):
+            report = probe_email_provider()
+
+        self.assertFalse(report["ok"])
+        self.assertIn("authorised_ips", report["detail"])
+        self.assertIn("Connect -> Outbound", report["detail"])
 
     @override_settings(**BREVO_SETTINGS)
     def test_probe_reports_an_unreachable_api(self):

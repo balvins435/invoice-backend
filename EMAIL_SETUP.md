@@ -87,6 +87,16 @@ Set `EMAIL_PROVIDER` explicitly when both keys are present. SendGrid is checked
 first, so leaving it empty would keep sending through SendGrid; diagnostics warns
 when more than one HTTP provider key is configured.
 
+### Brevo IP restrictions
+
+Brevo can refuse every API call with `401 ... unrecognised IP address`, which looks
+like an auth failure but is the account IP allowlist. Either switch the restriction
+off at https://app.brevo.com/security/authorised_ips, or allowlist the outbound IP
+ranges of the Render service (Dashboard -> the service -> Connect -> Outbound).
+Allowlist the whole range rather than one address: Render shares its outbound ranges
+with the other services in the region, so a single address can change and break
+sending again. Dedicated static outbound IPs are a paid Render add-on.
+
 ## Verifying a deployment
 
 `GET /api/invoice/email-diagnostics/` reports the active configuration without
@@ -205,3 +215,27 @@ directly, and a retry usually succeeds.
 
 Failures are also logged server-side with a full traceback, so they show up in
 the Render log stream.
+
+### Messages that are accepted but never arrive
+
+A `200` means the provider *accepted* the message, not that it was delivered.
+Every accepted send writes the provider handle to the server log:
+
+```text
+Email accepted by brevo (to=[...], subject=..., provider_message_id=<...>)
+```
+
+Use that id to read the provider verdict, which is the only source of truth once
+the message has left the app:
+
+* Brevo: Transactional -> Email -> Logs, searchable by recipient or `messageId`.
+  The status distinguishes `delivered` from `deferred`, `blocked`, `bounce`,
+  `spam` and `invalid`.
+* SendGrid: Activity Feed, searchable by the `X-Message-Id` in the same log line.
+
+A status of `delivered` means the message reached the recipient mail server, so
+anything after that is recipient-side filtering. Sending from a consumer mailbox
+is the usual reason: Gmail treats mail claiming a `gmail.com` From address from
+outside Google as a spoofing signal, and frequently files it as spam or drops it.
+Authenticate a domain in the provider, or send from an address on one, before
+judging deliverability.
