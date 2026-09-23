@@ -1,6 +1,5 @@
 import json
 import logging
-from datetime import datetime
 from urllib import error, request
 
 from django.conf import settings
@@ -101,7 +100,7 @@ class EtimsService:
             return submission
 
         if not self._is_live_configured():
-            tax_invoice_number = f"ETIMS-{datetime.now().strftime('%Y%m%d')}-{invoice.id}"
+            tax_invoice_number = f"ETIMS-{timezone.localtime().strftime('%Y%m%d')}-{invoice.id}"
             submission.status = TaxSubmission.STATUS_SUBMITTED
             submission.tax_invoice_number = tax_invoice_number
             submission.response_payload = {

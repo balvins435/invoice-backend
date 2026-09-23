@@ -1,7 +1,9 @@
 from io import BytesIO
 from calendar import month_name
-from datetime import datetime
+from zoneinfo import ZoneInfo
 
+from django.conf import settings
+from django.utils import timezone
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
@@ -72,6 +74,7 @@ def _kpi_card(title, value, accent, soft_bg, styles):
 
 
 def generate_report_pdf(business, year, month=None):
+    generated_at = timezone.now().astimezone(ZoneInfo(settings.TIME_ZONE))
     buffer = BytesIO()
     doc = SimpleDocTemplate(
         buffer,
@@ -185,7 +188,7 @@ def generate_report_pdf(business, year, month=None):
         header,
         Spacer(1, 6 * mm),
         Paragraph(f"Period: {period_label}", styles["MetaText"]),
-        Paragraph(f"Generated: {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}", styles["MetaText"]),
+        Paragraph(f"Generated: {generated_at.strftime('%Y-%m-%d %H:%M %Z')}", styles["MetaText"]),
         Spacer(1, 6 * mm),
     ]
 

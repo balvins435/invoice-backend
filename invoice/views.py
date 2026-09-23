@@ -1,5 +1,4 @@
 import logging
-import smtplib
 
 from rest_framework import viewsets, permissions, status
 from rest_framework.decorators import action
@@ -11,7 +10,8 @@ from .permissions import IsBusinessOwner
 from django.http import FileResponse
 from .utils import generate_invoice_pdf, generate_receipt_pdf
 
-from .email_utils import InvoiceEmailError
+from .email_utils import EmailConfigurationError, InvoiceEmailError
+from .email_utils import email_diagnostics as email_diagnostics_report
 from .application.services import get_or_create_receipt, mark_invoice_paid, send_invoice
 from .selectors import filter_invoices, invoices_for_user
 
@@ -70,21 +70,29 @@ class InvoiceViewSet(viewsets.ModelViewSet):
         invoice = self.get_object()
         try:
             send_invoice(invoice)
-        except smtplib.SMTPAuthenticationError:
+        except EmailConfigurationError as exc:
+            logger.error("Invoice email is not configured (invoice=%s): %s", invoice.pk, exc)
             return Response(
-                {'error': 'SMTP authentication failed. Check EMAIL_HOST_USER/EMAIL_HOST_PASSWORD.'},
-                status=status.HTTP_502_BAD_GATEWAY
-            )
-        except smtplib.SMTPException as exc:
-            return Response(
-                {'error': f'Email delivery failed: {exc}'},
-                status=status.HTTP_502_BAD_GATEWAY
+                {
+                    'error': f'Email delivery is not configured: {exc}',
+                    'code': 'email_not_configured',
+                },
+                status=status.HTTP_503_SERVICE_UNAVAILABLE
             )
         except InvoiceEmailError as exc:
-            logger.warning("Invoice email delivery failed for invoice=%s: %s", invoice.id, exc)
+            logger.error("Invoice email delivery failed (invoice=%s): %s", invoice.pk, exc)
             return Response(
-                {'error': f'Email delivery failed: {exc}'},
+                {
+                    'error': f'Email delivery failed: {exc}',
+                    'code': 'email_delivery_failed',
+                },
                 status=status.HTTP_502_BAD_GATEWAY
             )
 
         return Response({'status': 'Invoice sent'})
+
+    @action(detail=False, methods=['get'], url_path='email-diagnostics')
+    def email_diagnostics(self, request):
+        """Report how outbound email is configured (no secrets are exposed)."""
+        probe = str(request.query_params.get('probe', '')).strip().lower() in {'1', 'true', 'yes'}
+        return Response(email_diagnostics_report(probe=probe))

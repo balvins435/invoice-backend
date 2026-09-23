@@ -1,7 +1,6 @@
 import base64
 import json
 import logging
-from datetime import datetime
 from decimal import Decimal
 from urllib import error, request
 
@@ -133,7 +132,7 @@ class MpesaService:
             ])
             return transaction, transaction.raw_response
 
-        timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+        timestamp = timezone.localtime().strftime("%Y%m%d%H%M%S")
         payload = {
             "BusinessShortCode": self.shortcode,
             "Password": self._build_password(timestamp),

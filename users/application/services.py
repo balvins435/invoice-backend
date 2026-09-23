@@ -2,10 +2,10 @@ import logging
 
 from django.conf import settings
 from django.contrib.auth.tokens import PasswordResetTokenGenerator
-from django.core.mail import send_mail
 from django.utils.encoding import force_bytes, force_str
 from django.utils.http import urlsafe_base64_decode, urlsafe_base64_encode
 
+from invoice.email_utils import send_email_message
 from users.models import User
 
 logger = logging.getLogger(__name__)
@@ -28,7 +28,12 @@ def request_password_reset(email):
     reset_link = f"{settings.FRONTEND_URL}/reset-password?uid={uid}&token={token}"
     message = f"We received a request to reset your password.\n\nReset your password using this link:\n{reset_link}\n\nIf you did not request this, you can safely ignore this email."
     try:
-        send_mail("Reset your SmartInvoice password", message, settings.DEFAULT_FROM_EMAIL, [user.email], fail_silently=False)
+        # Shared delivery layer: uses SendGrid on hosts that block outbound SMTP.
+        send_email_message(
+            subject="Reset your SmartInvoice password",
+            recipients=[user.email],
+            text_content=message,
+        )
     except Exception as exc:
         logger.exception("Password reset email failed for %s: %s", email, exc)
 

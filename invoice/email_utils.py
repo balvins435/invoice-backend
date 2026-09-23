@@ -1,19 +1,135 @@
-import smtplib
+"""Email delivery adapters shared by every outbound app email.
+
+Two providers are supported:
+
+* ``sendgrid`` - HTTP API, required on hosts that block outbound SMTP.
+* ``smtp``     - classic SMTP relay, the default for local development.
+
+``settings.EMAIL_PROVIDER`` selects the provider explicitly. When it is left
+blank the provider is auto-selected: SendGrid when ``SENDGRID_API_KEY`` is
+configured, SMTP otherwise.
+
+Render's free instance type blocks outbound traffic on ports 25, 465 and 587,
+so SMTP delivery cannot work there regardless of the credentials used. An HTTP
+provider (or a paid instance type) is required in that case.
+"""
 import base64
 import json
+import logging
+import smtplib
 from socket import timeout as socket_timeout
 from urllib import error as urlerror
 from urllib import request as urlrequest
 
-from django.core.mail import EmailMultiAlternatives, get_connection
 from django.conf import settings
+from django.core.mail import EmailMultiAlternatives, get_connection
 from django.template.loader import render_to_string
 
 from .utils import generate_invoice_pdf
 
+logger = logging.getLogger(__name__)
+
+SMTP_PROVIDER = "smtp"
+SENDGRID_PROVIDER = "sendgrid"
+SUPPORTED_PROVIDERS = (SMTP_PROVIDER, SENDGRID_PROVIDER)
+
+SENDGRID_SEND_URL = "https://api.sendgrid.com/v3/mail/send"
+SENDGRID_SCOPES_URL = "https://api.sendgrid.com/v3/scopes"
+
+SMTP_EGRESS_BLOCKED_HINT = (
+    "Render blocks outbound SMTP traffic on ports 25, 465 and 587 for free web "
+    "services, so SMTP delivery cannot work there. Configure an HTTP email API "
+    "instead (SENDGRID_API_KEY + SENDGRID_FROM_EMAIL) or move the service to a "
+    "paid instance type."
+)
+
+SMTP_AUTH_HINT = (
+    "Gmail requires a 16 character app password from "
+    "https://myaccount.google.com/apppasswords with 2-step verification enabled; "
+    "the account password is always rejected."
+)
+
 
 class InvoiceEmailError(Exception):
-    """Raised when invoice email delivery fails."""
+    """Raised when an email could not be delivered."""
+
+
+class EmailConfigurationError(InvoiceEmailError):
+    """Raised when the active email provider is missing required configuration."""
+
+
+def _setting(name, default=""):
+    return getattr(settings, name, None) or default
+
+
+def _is_render():
+    return bool(getattr(settings, "IS_RENDER", False))
+
+
+def _timeout():
+    return getattr(settings, "EMAIL_TIMEOUT", None) or 10
+
+
+def _smtp_endpoint():
+    return f"{_setting('EMAIL_HOST', 'the configured SMTP host')}:{getattr(settings, 'EMAIL_PORT', '')}"
+
+
+def _smtp_unreachable_error(exc):
+    message = f"Could not reach the SMTP server at {_smtp_endpoint()} ({exc})."
+    if _is_render():
+        message = f"{message} {SMTP_EGRESS_BLOCKED_HINT}"
+    return message
+
+
+def resolve_provider():
+    """Return the provider to use: ``sendgrid`` or ``smtp``."""
+    configured = str(_setting("EMAIL_PROVIDER")).strip().lower()
+    if configured:
+        if configured not in SUPPORTED_PROVIDERS:
+            raise EmailConfigurationError(
+                f"EMAIL_PROVIDER='{configured}' is not supported. "
+                f"Use one of: {', '.join(SUPPORTED_PROVIDERS)}."
+            )
+        return configured
+    return SENDGRID_PROVIDER if _setting("SENDGRID_API_KEY") else SMTP_PROVIDER
+
+
+def validate_email_configuration():
+    """Return the active provider, raising when it cannot be used to send mail."""
+    provider = resolve_provider()
+    sender = _setting("SENDGRID_FROM_EMAIL") or _setting("DEFAULT_FROM_EMAIL")
+
+    if provider == SENDGRID_PROVIDER:
+        if not _setting("SENDGRID_API_KEY"):
+            raise EmailConfigurationError(
+                "EMAIL_PROVIDER is 'sendgrid' but SENDGRID_API_KEY is not set. Add the "
+                "SendGrid API key, or remove EMAIL_PROVIDER to fall back to SMTP."
+            )
+        if not sender:
+            raise EmailConfigurationError(
+                "Set SENDGRID_FROM_EMAIL to a sender verified in SendGrid (or set "
+                "DEFAULT_FROM_EMAIL) so outbound email has a valid From address."
+            )
+        return provider
+
+    missing = [
+        name
+        for name in ("EMAIL_HOST", "EMAIL_HOST_USER", "EMAIL_HOST_PASSWORD")
+        if not _setting(name)
+    ]
+    if missing:
+        verbs = "is" if len(missing) == 1 else "are"
+        message = f"SMTP email delivery is selected but {' and '.join(missing)} {verbs} not set."
+        if not str(_setting("EMAIL_PROVIDER")).strip():
+            message += (
+                " EMAIL_PROVIDER is not set and no SENDGRID_API_KEY is configured, so SMTP "
+                "is used by default; configure SENDGRID_API_KEY for HTTP delivery."
+            )
+        if _is_render():
+            message = f"{message} {SMTP_EGRESS_BLOCKED_HINT}"
+        raise EmailConfigurationError(message)
+
+    return provider
 
 
 def _build_invoice_email_content(invoice):
@@ -27,22 +143,28 @@ def _build_invoice_email_content(invoice):
     return subject, text_content, html_content
 
 
-def _send_via_sendgrid(invoice, pdf_bytes):
-    api_key = settings.SENDGRID_API_KEY
-    if not api_key:
-        raise InvoiceEmailError("SendGrid is enabled but SENDGRID_API_KEY is missing.")
+def _normalise_attachments(attachments):
+    return [
+        (filename, content if isinstance(content, bytes) else bytes(content), mimetype or "application/octet-stream")
+        for filename, content, mimetype in attachments
+    ]
 
-    from_email = settings.SENDGRID_FROM_EMAIL or settings.DEFAULT_FROM_EMAIL
-    if not from_email:
-        raise InvoiceEmailError("SENDGRID_FROM_EMAIL or DEFAULT_FROM_EMAIL must be configured.")
 
-    subject, text_content, html_content = _build_invoice_email_content(invoice)
+def _read_error_body(exc):
+    """Best-effort read of an error response body (it may be absent)."""
+    try:
+        body = exc.read()
+    except Exception:  # pragma: no cover - defensive, transport dependent
+        return ""
+    return (body or b"").decode("utf-8", errors="ignore")
 
+
+def _send_via_sendgrid(*, subject, text_content, html_content, recipients, attachments, from_email):
     payload = {
         "from": {"email": from_email},
         "personalizations": [
             {
-                "to": [{"email": invoice.client_email}],
+                "to": [{"email": address} for address in recipients],
                 "subject": subject,
             }
         ],
@@ -51,79 +173,206 @@ def _send_via_sendgrid(invoice, pdf_bytes):
             "X-Auto-Response-Suppress": "All",
         },
         "content": [
-            {
-                "type": "text/plain",
-                "value": text_content,
-            },
-            {
-                "type": "text/html",
-                "value": html_content,
-            }
-        ],
-        "attachments": [
-            {
-                "content": base64.b64encode(pdf_bytes).decode("ascii"),
-                "type": "application/pdf",
-                "filename": f"{invoice.invoice_number}.pdf",
-                "disposition": "attachment",
-            }
+            {"type": "text/plain", "value": text_content},
+            {"type": "text/html", "value": html_content},
         ],
     }
+    if attachments:
+        payload["attachments"] = [
+            {
+                "content": base64.b64encode(content).decode("ascii"),
+                "type": mimetype,
+                "filename": filename,
+                "disposition": "attachment",
+            }
+            for filename, content, mimetype in attachments
+        ]
 
-    req = urlrequest.Request(
-        "https://api.sendgrid.com/v3/mail/send",
+    request = urlrequest.Request(
+        SENDGRID_SEND_URL,
         data=json.dumps(payload).encode("utf-8"),
         headers={
-            "Authorization": f"Bearer {api_key}",
+            "Authorization": f"Bearer {_setting('SENDGRID_API_KEY')}",
             "Content-Type": "application/json",
         },
         method="POST",
     )
 
     try:
-        with urlrequest.urlopen(req, timeout=settings.EMAIL_TIMEOUT) as resp:
-            if resp.status >= 400:
-                body = resp.read().decode("utf-8", errors="ignore")
-                raise InvoiceEmailError(f"SendGrid API error {resp.status}: {body}")
+        with urlrequest.urlopen(request, timeout=_timeout()) as response:
+            if response.status >= 400:
+                body = _read_error_body(response)
+                raise InvoiceEmailError(f"SendGrid API error {response.status}: {body}")
     except urlerror.HTTPError as exc:
-        body = exc.read().decode("utf-8", errors="ignore")
-        raise InvoiceEmailError(f"SendGrid API error {exc.code}: {body}") from exc
+        body = _read_error_body(exc)
+        raise InvoiceEmailError(f"SendGrid rejected the message ({exc.code}): {body}") from exc
     except (urlerror.URLError, TimeoutError, OSError) as exc:
-        raise InvoiceEmailError(f"SendGrid request failed: {exc}") from exc
+        raise InvoiceEmailError(f"Could not reach the SendGrid API: {exc}") from exc
 
 
-def _send_via_smtp(invoice, pdf_bytes):
-    subject, text_content, html_content = _build_invoice_email_content(invoice)
-
+def _send_via_smtp(*, subject, text_content, html_content, recipients, attachments, from_email):
     email = EmailMultiAlternatives(
         subject=subject,
         body=text_content,
-        to=[invoice.client_email],
+        from_email=from_email,
+        to=list(recipients),
         connection=get_connection(fail_silently=False),
         headers={
             "X-Auto-Response-Suppress": "All",
         },
     )
-    email.attach_alternative(html_content, "text/html")
-
-    email.attach(
-        f"{invoice.invoice_number}.pdf",
-        pdf_bytes,
-        "application/pdf",
-    )
+    if html_content:
+        email.attach_alternative(html_content, "text/html")
+    for filename, content, mimetype in attachments:
+        email.attach(filename, content, mimetype)
 
     try:
         email.send(fail_silently=False)
-    except (smtplib.SMTPException, socket_timeout, TimeoutError, OSError) as exc:
-        raise InvoiceEmailError(str(exc)) from exc
+    except smtplib.SMTPAuthenticationError as exc:
+        user = _setting("EMAIL_HOST_USER", "the configured SMTP user")
+        raise InvoiceEmailError(
+            f"SMTP authentication failed for {user} ({exc}). {SMTP_AUTH_HINT}"
+        ) from exc
+    except (socket_timeout, TimeoutError, OSError, smtplib.SMTPServerDisconnected) as exc:
+        raise InvoiceEmailError(_smtp_unreachable_error(exc)) from exc
+    except smtplib.SMTPException as exc:
+        raise InvoiceEmailError(f"SMTP delivery failed: {exc}") from exc
+
+
+def send_email_message(*, subject, recipients, text_content="", html_content=None, attachments=(), from_email=None):
+    """Deliver a single email through whichever provider is configured."""
+    provider = validate_email_configuration()
+
+    addresses = [address for address in recipients if address]
+    if not addresses:
+        raise EmailConfigurationError("No recipient address was provided for this email.")
+
+    sender = from_email or _setting("SENDGRID_FROM_EMAIL") or _setting("DEFAULT_FROM_EMAIL")
+    payload = {
+        "subject": subject,
+        "text_content": text_content or "",
+        "html_content": html_content,
+        "recipients": addresses,
+        "attachments": _normalise_attachments(attachments),
+        "from_email": sender,
+    }
+
+    try:
+        if provider == SENDGRID_PROVIDER:
+            _send_via_sendgrid(**payload)
+        else:
+            _send_via_smtp(**payload)
+    except InvoiceEmailError as exc:
+        logger.error(
+            "Email delivery via %s failed (to=%s, subject=%r): %s",
+            provider,
+            addresses,
+            subject,
+            exc,
+            exc_info=True,
+        )
+        raise
+
+    logger.info("Email delivered via %s (to=%s, subject=%r)", provider, addresses, subject)
 
 
 def send_invoice_email(invoice):
-    pdf = generate_invoice_pdf(invoice)
-    pdf_bytes = pdf.read()
+    subject, text_content, html_content = _build_invoice_email_content(invoice)
+    pdf_bytes = generate_invoice_pdf(invoice).read()
+    send_email_message(
+        subject=subject,
+        recipients=[invoice.client_email],
+        text_content=text_content,
+        html_content=html_content,
+        attachments=[(f"{invoice.invoice_number}.pdf", pdf_bytes, "application/pdf")],
+    )
 
-    provider = getattr(settings, "EMAIL_PROVIDER", "smtp").lower()
-    if provider == "sendgrid":
-        _send_via_sendgrid(invoice, pdf_bytes)
-    else:
-        _send_via_smtp(invoice, pdf_bytes)
+
+def _probe_sendgrid():
+    request = urlrequest.Request(
+        SENDGRID_SCOPES_URL,
+        headers={"Authorization": f"Bearer {_setting('SENDGRID_API_KEY')}"},
+        method="GET",
+    )
+    try:
+        with urlrequest.urlopen(request, timeout=_timeout()) as response:
+            ok = 200 <= response.status < 300
+    except urlerror.HTTPError as exc:
+        if exc.code in (401, 403):
+            return {"ok": False, "detail": f"SendGrid rejected the API key (HTTP {exc.code})."}
+        return {"ok": False, "detail": f"SendGrid returned an unexpected response (HTTP {exc.code})."}
+    except (urlerror.URLError, TimeoutError, OSError) as exc:
+        return {"ok": False, "detail": f"Could not reach the SendGrid API: {exc}"}
+    if ok:
+        return {"ok": True, "detail": "SendGrid accepted the API key."}
+    return {"ok": False, "detail": "SendGrid returned an unexpected response."}
+
+
+def _probe_smtp():
+    try:
+        connection = get_connection(fail_silently=False)
+        connection.open()
+        connection.close()
+    except smtplib.SMTPAuthenticationError as exc:
+        user = _setting("EMAIL_HOST_USER", "the configured SMTP user")
+        return {"ok": False, "detail": f"SMTP authentication failed for {user} ({exc}). {SMTP_AUTH_HINT}"}
+    except (socket_timeout, TimeoutError, OSError, smtplib.SMTPServerDisconnected) as exc:
+        return {"ok": False, "detail": _smtp_unreachable_error(exc)}
+    except smtplib.SMTPException as exc:
+        return {"ok": False, "detail": f"SMTP connection failed: {exc}"}
+    return {"ok": True, "detail": "SMTP connection and authentication succeeded."}
+
+
+def probe_email_provider(provider=None):
+    """Open a real connection to the provider without sending a message."""
+    provider = provider or validate_email_configuration()
+    if provider == SENDGRID_PROVIDER:
+        return _probe_sendgrid()
+    return _probe_smtp()
+
+
+def email_diagnostics(probe=False):
+    """Return a non-sensitive snapshot of the active email configuration."""
+    try:
+        provider = resolve_provider()
+    except EmailConfigurationError:
+        provider = None
+
+    info = {
+        "provider": provider,
+        "explicit_provider": str(_setting("EMAIL_PROVIDER")).strip() or None,
+        "ready": False,
+        "problems": [],
+        "warnings": [],
+        "on_render": _is_render(),
+        "timeout_seconds": getattr(settings, "EMAIL_TIMEOUT", None),
+        "default_from_email": _setting("DEFAULT_FROM_EMAIL") or None,
+        "sendgrid_api_key_configured": bool(_setting("SENDGRID_API_KEY")),
+        "sendgrid_from_email": _setting("SENDGRID_FROM_EMAIL") or None,
+        "smtp_host": _setting("EMAIL_HOST") or None,
+        "smtp_port": getattr(settings, "EMAIL_PORT", None),
+        "smtp_use_tls": bool(getattr(settings, "EMAIL_USE_TLS", False)),
+        "smtp_use_ssl": bool(getattr(settings, "EMAIL_USE_SSL", False)),
+        "smtp_user_configured": bool(_setting("EMAIL_HOST_USER")),
+        "smtp_password_configured": bool(_setting("EMAIL_HOST_PASSWORD")),
+    }
+
+    try:
+        info["provider"] = validate_email_configuration()
+        info["ready"] = True
+    except EmailConfigurationError as exc:
+        info["problems"].append(str(exc))
+
+    if info["on_render"] and info["provider"] == SMTP_PROVIDER and info["smtp_host"]:
+        info["warnings"].append(SMTP_EGRESS_BLOCKED_HINT)
+
+    if probe:
+        if info["ready"]:
+            info["probe"] = probe_email_provider(info["provider"])
+        else:
+            info["probe"] = {
+                "ok": False,
+                "detail": "Email delivery is not configured; resolve the reported problems first.",
+            }
+
+    return info

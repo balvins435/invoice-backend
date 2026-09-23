@@ -49,6 +49,7 @@ DEBUG = env.bool("DEBUG", default=False)
 ALLOWED_HOSTS = env.list("ALLOWED_HOSTS", default=[])
 render_external_hostname = env("RENDER_EXTERNAL_HOSTNAME", default="")
 is_render = bool(render_external_hostname) or env.bool("RENDER", default=False)
+IS_RENDER = is_render
 if render_external_hostname and render_external_hostname not in ALLOWED_HOSTS:
     ALLOWED_HOSTS.append(render_external_hostname)
 if DEBUG and not ALLOWED_HOSTS:
@@ -182,7 +183,7 @@ AUTH_PASSWORD_VALIDATORS = [
 ]
 
 LANGUAGE_CODE = "en-us"
-TIME_ZONE = "UTC"
+TIME_ZONE = env("TIME_ZONE", default="Africa/Nairobi")
 USE_I18N = True
 USE_TZ = True
 
@@ -315,7 +316,9 @@ CELERY_BEAT_SCHEDULER = "django_celery_beat.schedulers:DatabaseScheduler"
 EMAIL_BACKEND = "django.core.mail.backends.smtp.EmailBackend"
 EMAIL_HOST = env("EMAIL_HOST", default="smtp.gmail.com")
 EMAIL_PORT = env.int("EMAIL_PORT", default=587)
-EMAIL_USE_TLS = env.bool("EMAIL_USE_TLS", default=True)
+# Port 465 speaks implicit TLS; 587 (and 25/2525) negotiate STARTTLS.
+EMAIL_USE_SSL = env.bool("EMAIL_USE_SSL", default=EMAIL_PORT == 465)
+EMAIL_USE_TLS = env.bool("EMAIL_USE_TLS", default=not EMAIL_USE_SSL)
 EMAIL_HOST_USER = env("EMAIL_HOST_USER", default="")
 EMAIL_HOST_PASSWORD = env("EMAIL_HOST_PASSWORD", default="").replace(" ", "")
 EMAIL_TIMEOUT = env.int("EMAIL_TIMEOUT", default=10)
@@ -324,10 +327,11 @@ if _default_from_email in ("", "EMAIL_HOST_USER"):
     _default_from_email = EMAIL_HOST_USER
 DEFAULT_FROM_EMAIL = _default_from_email
 
-# Email provider selection:
-# - Local/default: SMTP
-# - Render default: SendGrid (HTTP API), unless overridden by EMAIL_PROVIDER
-EMAIL_PROVIDER = env("EMAIL_PROVIDER", default="sendgrid" if is_render else "smtp").lower()
+# Email provider selection: "sendgrid" (HTTP API) or "smtp".
+# Leave EMAIL_PROVIDER empty to auto-select: SendGrid when SENDGRID_API_KEY is
+# configured, SMTP otherwise. Hosts that block outbound SMTP (Render free blocks
+# ports 25/465/587) need the SendGrid API provider.
+EMAIL_PROVIDER = env("EMAIL_PROVIDER", default="").strip().lower()
 SENDGRID_API_KEY = env("SENDGRID_API_KEY", default="")
 SENDGRID_FROM_EMAIL = env("SENDGRID_FROM_EMAIL", default=DEFAULT_FROM_EMAIL)
 
@@ -338,6 +342,7 @@ TWILIO_ACCOUNT_SID = env("TWILIO_ACCOUNT_SID", default="")
 TWILIO_AUTH_TOKEN = env("TWILIO_AUTH_TOKEN", default="")
 TWILIO_WHATSAPP_FROM = env("TWILIO_WHATSAPP_FROM", default="")
 
+# MPESA Configuration
 MPESA_CONSUMER_KEY = env("MPESA_CONSUMER_KEY", default="")
 MPESA_CONSUMER_SECRET = env("MPESA_CONSUMER_SECRET", default="")
 MPESA_SHORTCODE = env("MPESA_SHORTCODE", default="")
