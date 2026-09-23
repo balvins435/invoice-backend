@@ -313,12 +313,28 @@ CELERY_RESULT_SERIALIZER = "json"
 CELERY_TIMEZONE = TIME_ZONE
 CELERY_BEAT_SCHEDULER = "django_celery_beat.schedulers:DatabaseScheduler"
 
+
+def _normalise_tls_flags(port, use_ssl, use_tls):
+    """Keep EMAIL_USE_SSL and EMAIL_USE_TLS mutually exclusive.
+
+    Django raises "EMAIL_USE_TLS/EMAIL_USE_SSL are mutually exclusive" when both are
+    true, and dashboards commonly keep a stale value for the flag they are not using
+    (eg EMAIL_PORT=465 together with EMAIL_USE_TLS=True). The port is the single
+    source of truth, so let it decide rather than fail at send time.
+    """
+    if not (use_ssl and use_tls):
+        return use_ssl, use_tls
+    use_ssl = port == 465
+    return use_ssl, not use_ssl
+
+
 EMAIL_BACKEND = "django.core.mail.backends.smtp.EmailBackend"
 EMAIL_HOST = env("EMAIL_HOST", default="smtp.gmail.com")
 EMAIL_PORT = env.int("EMAIL_PORT", default=587)
 # Port 465 speaks implicit TLS; 587 (and 25/2525) negotiate STARTTLS.
 EMAIL_USE_SSL = env.bool("EMAIL_USE_SSL", default=EMAIL_PORT == 465)
 EMAIL_USE_TLS = env.bool("EMAIL_USE_TLS", default=not EMAIL_USE_SSL)
+EMAIL_USE_SSL, EMAIL_USE_TLS = _normalise_tls_flags(EMAIL_PORT, EMAIL_USE_SSL, EMAIL_USE_TLS)
 EMAIL_HOST_USER = env("EMAIL_HOST_USER", default="")
 EMAIL_HOST_PASSWORD = env("EMAIL_HOST_PASSWORD", default="").replace(" ", "")
 EMAIL_TIMEOUT = env.int("EMAIL_TIMEOUT", default=10)

@@ -9,6 +9,12 @@ Two providers are supported:
 blank the provider is auto-selected: SendGrid when ``SENDGRID_API_KEY`` is
 configured, SMTP otherwise.
 
+Values for the provider come from environment variables, which are frequently
+pasted into dashboard textareas. They are sanitised on read (surrounding
+whitespace, newlines and wrapping quotes are removed) because a trailing newline
+in SENDGRID_API_KEY or SENDGRID_FROM_EMAIL makes SendGrid reject the request
+with 401/403.
+
 Render's free instance type blocks outbound traffic on ports 25, 465 and 587,
 so SMTP delivery cannot work there regardless of the credentials used. An HTTP
 provider (or a paid instance type) is required in that case.
@@ -16,6 +22,7 @@ provider (or a paid instance type) is required in that case.
 import base64
 import json
 import logging
+import os
 import smtplib
 from socket import timeout as socket_timeout
 from urllib import error as urlerror
@@ -35,6 +42,7 @@ SUPPORTED_PROVIDERS = (SMTP_PROVIDER, SENDGRID_PROVIDER)
 
 SENDGRID_SEND_URL = "https://api.sendgrid.com/v3/mail/send"
 SENDGRID_SCOPES_URL = "https://api.sendgrid.com/v3/scopes"
+SENDGRID_CREDITS_URL = "https://api.sendgrid.com/v3/user/credits"
 
 SMTP_EGRESS_BLOCKED_HINT = (
     "Render blocks outbound SMTP traffic on ports 25, 465 and 587 for free web "
@@ -49,6 +57,21 @@ SMTP_AUTH_HINT = (
     "the account password is always rejected."
 )
 
+# Consumer mailboxes cannot be authenticated as a sending domain, so SendGrid only
+# accepts them after the exact address is added as a verified Single Sender.
+FREEMAIL_DOMAINS = (
+    "aol.com",
+    "gmail.com",
+    "googlemail.com",
+    "hotmail.com",
+    "icloud.com",
+    "live.com",
+    "outlook.com",
+    "proton.me",
+    "protonmail.com",
+    "yahoo.com",
+)
+
 
 class InvoiceEmailError(Exception):
     """Raised when an email could not be delivered."""
@@ -58,8 +81,21 @@ class EmailConfigurationError(InvoiceEmailError):
     """Raised when the active email provider is missing required configuration."""
 
 
+def _clean(value):
+    """Strip stray whitespace, newlines and wrapping quotes from an env value."""
+    if not isinstance(value, str):
+        return value
+    text = value.strip()
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in {'"', "'"}:
+        text = text[1:-1].strip()
+    return text
+
+
 def _setting(name, default=""):
-    return getattr(settings, name, None) or default
+    value = _clean(getattr(settings, name, None))
+    if value is None or value == "":
+        return default
+    return value
 
 
 def _is_render():
@@ -72,6 +108,13 @@ def _timeout():
 
 def _smtp_endpoint():
     return f"{_setting('EMAIL_HOST', 'the configured SMTP host')}:{getattr(settings, 'EMAIL_PORT', '')}"
+
+
+def _smtp_settings_error(exc):
+    return (
+        f"SMTP settings are invalid: {exc} Check EMAIL_PORT, EMAIL_USE_TLS and "
+        "EMAIL_USE_SSL; at most one of TLS and SSL may be enabled."
+    )
 
 
 def _smtp_unreachable_error(exc):
@@ -150,6 +193,58 @@ def _normalise_attachments(attachments):
     ]
 
 
+SENDGRID_HINTS = (
+    (
+        ("verified sender", "sender identity", "does not match a verified"),
+        "SENDGRID_FROM_EMAIL must be an address verified in SendGrid "
+        "(Settings -> Sender Authentication -> Single Sender Verification), or a "
+        "domain you have authenticated there.",
+    ),
+    (
+        ("credits", "quota", "plan limit", "suspended", "billing"),
+        "The SendGrid account cannot send right now (credits, plan limit or "
+        "suspension). Check the account status in the SendGrid dashboard.",
+    ),
+)
+
+
+def _summarise_provider_detail(body):
+    """Reduce a SendGrid error envelope to the messages SendGrid wrote.
+
+    SendGrid answers with {"errors": [{"message": ...}]}; showing that envelope
+    verbatim in a toast buries the one sentence that matters.
+    """
+    raw = (body or "").strip()
+    if not raw:
+        return "empty response body"
+    try:
+        payload = json.loads(raw)
+    except ValueError:
+        return raw
+    messages = [
+        entry["message"]
+        for entry in (payload.get("errors") or [])
+        if isinstance(entry, dict) and entry.get("message")
+    ]
+    return "; ".join(messages) if messages else raw
+
+
+def _sendgrid_failure(status, body):
+    """Translate a SendGrid error payload into an actionable message."""
+    detail = _summarise_provider_detail(body)
+    lowered = detail.lower()
+    hint = next((text for needles, text in SENDGRID_HINTS if any(n in lowered for n in needles)), "")
+    if not hint and status in (401, 403):
+        hint = (
+            "The API key was rejected: check SENDGRID_API_KEY is current, has no stray "
+            "whitespace, and grants Mail Send (or Full Access)."
+        )
+    message = f"SendGrid rejected the message ({status}): {detail}"
+    if not message.endswith((".", "!", "?")):
+        message = f"{message}."
+    return f"{message} {hint}" if hint else message
+
+
 def _read_error_body(exc):
     """Best-effort read of an error response body (it may be absent)."""
     try:
@@ -202,10 +297,10 @@ def _send_via_sendgrid(*, subject, text_content, html_content, recipients, attac
         with urlrequest.urlopen(request, timeout=_timeout()) as response:
             if response.status >= 400:
                 body = _read_error_body(response)
-                raise InvoiceEmailError(f"SendGrid API error {response.status}: {body}")
+                raise InvoiceEmailError(_sendgrid_failure(response.status, body))
     except urlerror.HTTPError as exc:
         body = _read_error_body(exc)
-        raise InvoiceEmailError(f"SendGrid rejected the message ({exc.code}): {body}") from exc
+        raise InvoiceEmailError(_sendgrid_failure(exc.code, body)) from exc
     except (urlerror.URLError, TimeoutError, OSError) as exc:
         raise InvoiceEmailError(f"Could not reach the SendGrid API: {exc}") from exc
 
@@ -235,6 +330,8 @@ def _send_via_smtp(*, subject, text_content, html_content, recipients, attachmen
         ) from exc
     except (socket_timeout, TimeoutError, OSError, smtplib.SMTPServerDisconnected) as exc:
         raise InvoiceEmailError(_smtp_unreachable_error(exc)) from exc
+    except ValueError as exc:
+        raise InvoiceEmailError(_smtp_settings_error(exc)) from exc
     except smtplib.SMTPException as exc:
         raise InvoiceEmailError(f"SMTP delivery failed: {exc}") from exc
 
@@ -288,6 +385,21 @@ def send_invoice_email(invoice):
     )
 
 
+def _sendgrid_credits():
+    """Best-effort credit balance; returns None when the key cannot read it."""
+    request = urlrequest.Request(
+        SENDGRID_CREDITS_URL,
+        headers={"Authorization": f"Bearer {_setting('SENDGRID_API_KEY')}"},
+        method="GET",
+    )
+    try:
+        with urlrequest.urlopen(request, timeout=_timeout()) as response:
+            payload = json.loads(response.read().decode("utf-8", errors="ignore"))
+    except (urlerror.HTTPError, urlerror.URLError, TimeoutError, OSError, ValueError):
+        return None
+    return payload if isinstance(payload, dict) and "remain" in payload else None
+
+
 def _probe_sendgrid():
     request = urlrequest.Request(
         SENDGRID_SCOPES_URL,
@@ -296,16 +408,52 @@ def _probe_sendgrid():
     )
     try:
         with urlrequest.urlopen(request, timeout=_timeout()) as response:
-            ok = 200 <= response.status < 300
+            payload = response.read().decode("utf-8", errors="ignore")
     except urlerror.HTTPError as exc:
-        if exc.code in (401, 403):
-            return {"ok": False, "detail": f"SendGrid rejected the API key (HTTP {exc.code})."}
-        return {"ok": False, "detail": f"SendGrid returned an unexpected response (HTTP {exc.code})."}
+        body = _read_error_body(exc)
+        detail = f"SendGrid rejected the API key (HTTP {exc.code})."
+        if body:
+            detail = f"{detail} {body}"
+        return {"ok": False, "detail": detail}
     except (urlerror.URLError, TimeoutError, OSError) as exc:
         return {"ok": False, "detail": f"Could not reach the SendGrid API: {exc}"}
-    if ok:
-        return {"ok": True, "detail": "SendGrid accepted the API key."}
-    return {"ok": False, "detail": "SendGrid returned an unexpected response."}
+
+    try:
+        scopes = json.loads(payload).get("scopes")
+    except (ValueError, AttributeError):
+        scopes = None
+
+    if scopes is None:
+        detail = "SendGrid accepted the API key."
+    elif "mail.send" in scopes:
+        detail = f"SendGrid accepted the API key with mail.send ({len(scopes)} scopes)."
+    else:
+        return {
+            "ok": False,
+            "detail": (
+                "The API key is valid but does not grant mail.send, so email cannot be "
+                "sent. Create a key with Mail Send (or Full Access) and update "
+                "SENDGRID_API_KEY."
+            ),
+            "scopes": scopes,
+        }
+
+    credits = _sendgrid_credits()
+    # A zero balance only means "out of credits" when the plan tracks credits at all
+    # (total is set); daily-limit plans report 0/0 while working normally.
+    if credits is not None and credits.get("total") and not credits.get("remain"):
+        return {
+            "ok": False,
+            "detail": (
+                f"SendGrid accepted the API key but reports 0 of {credits['total']} email "
+                "credits remaining, which makes every send fail with 401 Maximum credits "
+                "exceeded. Restore the plan or quota on the SendGrid account."
+            ),
+            "credits": credits,
+        }
+    if credits is not None and credits.get("total"):
+        detail = f"{detail} Credits remaining: {credits['remain']} of {credits['total']}."
+    return {"ok": True, "detail": detail}
 
 
 def _probe_smtp():
@@ -318,6 +466,8 @@ def _probe_smtp():
         return {"ok": False, "detail": f"SMTP authentication failed for {user} ({exc}). {SMTP_AUTH_HINT}"}
     except (socket_timeout, TimeoutError, OSError, smtplib.SMTPServerDisconnected) as exc:
         return {"ok": False, "detail": _smtp_unreachable_error(exc)}
+    except ValueError as exc:
+        return {"ok": False, "detail": _smtp_settings_error(exc)}
     except smtplib.SMTPException as exc:
         return {"ok": False, "detail": f"SMTP connection failed: {exc}"}
     return {"ok": True, "detail": "SMTP connection and authentication succeeded."}
@@ -329,6 +479,16 @@ def probe_email_provider(provider=None):
     if provider == SENDGRID_PROVIDER:
         return _probe_sendgrid()
     return _probe_smtp()
+
+
+def _sanitized_env_notes():
+    """Report which provider env values carried stray whitespace or quotes."""
+    notes = {}
+    for name in ("SENDGRID_API_KEY", "SENDGRID_FROM_EMAIL", "EMAIL_HOST_USER", "EMAIL_HOST", "EMAIL_PROVIDER"):
+        raw = os.environ.get(name)
+        if raw and str(raw).strip() != _clean(raw):
+            notes[name] = "Stray whitespace or quotes were removed when this value was loaded."
+    return notes
 
 
 def email_diagnostics(probe=False):
@@ -348,7 +508,10 @@ def email_diagnostics(probe=False):
         "timeout_seconds": getattr(settings, "EMAIL_TIMEOUT", None),
         "default_from_email": _setting("DEFAULT_FROM_EMAIL") or None,
         "sendgrid_api_key_configured": bool(_setting("SENDGRID_API_KEY")),
+        "sendgrid_api_key_prefix": (_setting("SENDGRID_API_KEY") or "")[:3] or None,
+        "sendgrid_api_key_length": len(_setting("SENDGRID_API_KEY") or ""),
         "sendgrid_from_email": _setting("SENDGRID_FROM_EMAIL") or None,
+        "env_values_sanitized": _sanitized_env_notes(),
         "smtp_host": _setting("EMAIL_HOST") or None,
         "smtp_port": getattr(settings, "EMAIL_PORT", None),
         "smtp_use_tls": bool(getattr(settings, "EMAIL_USE_TLS", False)),
@@ -365,6 +528,27 @@ def email_diagnostics(probe=False):
 
     if info["on_render"] and info["provider"] == SMTP_PROVIDER and info["smtp_host"]:
         info["warnings"].append(SMTP_EGRESS_BLOCKED_HINT)
+
+    if info["provider"] == SENDGRID_PROVIDER and (info["smtp_user_configured"] or info["smtp_password_configured"]):
+        info["warnings"].append(
+            "EMAIL_PROVIDER is set to sendgrid, so the EMAIL_HOST_* settings are not "
+            "used; mail is delivered through the SendGrid HTTP API."
+        )
+
+    sender = info["sendgrid_from_email"] or info["default_from_email"]
+    if info["provider"] == SENDGRID_PROVIDER and sender and sender.rpartition("@")[2].lower() in FREEMAIL_DOMAINS:
+        info["warnings"].append(
+            f"SENDGRID_FROM_EMAIL is {sender}, a consumer mailbox. SendGrid only sends "
+            "from addresses it has verified, so add it under Settings -> Sender "
+            "Authentication -> Single Sender Verification and complete the confirmation "
+            "email, or send from a domain you have authenticated."
+        )
+
+    if info["sendgrid_api_key_configured"] and info["sendgrid_api_key_prefix"] != "SG.":
+        info["warnings"].append(
+            "SENDGRID_API_KEY does not start with SG.; SendGrid API keys use that "
+            "prefix, so the value may be truncated or is a different credential."
+        )
 
     if probe:
         if info["ready"]:

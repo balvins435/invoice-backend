@@ -8,11 +8,12 @@ from urllib import error as urlerror
 
 from django.core import mail
 from django.core.mail.backends.smtp import EmailBackend
-from django.test import TestCase, override_settings
+from django.test import SimpleTestCase, TestCase, override_settings
 from rest_framework.test import APIClient
 
 from business.models import Business
 from invoice.email_utils import (
+    _sendgrid_failure,
     SENDGRID_PROVIDER,
     SMTP_PROVIDER,
     EmailConfigurationError,
@@ -25,6 +26,7 @@ from invoice.email_utils import (
     validate_email_configuration,
 )
 from invoice.models import Invoice
+from smartinvoice.settings import _normalise_tls_flags
 from users.models import User
 
 
@@ -354,3 +356,237 @@ class InvoiceEmailDeliveryIntegrationTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.invoice.refresh_from_db()
         self.assertEqual(self.invoice.status, "sent")
+
+
+class EnvValueSanitisationTests(TestCase):
+    @override_settings(
+        **{
+            **SENDGRID_SETTINGS,
+            "SENDGRID_API_KEY": "  SG.test-key\n",
+            "SENDGRID_FROM_EMAIL": '"billing@example.com"',
+        }
+    )
+    def test_stray_whitespace_and_quotes_are_stripped_before_use(self):
+        with mock.patch("invoice.email_utils.urlrequest.urlopen", return_value=FakeResponse()) as urlopen:
+            send_email_message(subject="Hi", recipients=["client@example.com"], text_content="Body")
+
+        sent = urlopen.call_args.args[0]
+        self.assertEqual(sent.get_header("Authorization"), "Bearer SG.test-key")
+        self.assertEqual(json.loads(sent.data.decode("utf-8"))["from"], {"email": "billing@example.com"})
+
+    @override_settings(
+        **{**SENDGRID_SETTINGS, "EMAIL_PROVIDER": "  SendGrid \n", "SENDGRID_API_KEY": "SG.test-key"}
+    )
+    def test_provider_name_is_sanitised(self):
+        self.assertEqual(resolve_provider(), SENDGRID_PROVIDER)
+
+    @override_settings(**{**SMTP_SETTINGS, "EMAIL_HOST_PASSWORD": "abcd efgh ijkl mnop"})
+    def test_smtp_password_spaces_are_still_supported(self):
+        self.assertEqual(validate_email_configuration(), SMTP_PROVIDER)
+
+
+class SendGridErrorTranslationTests(SimpleTestCase):
+    def test_verified_sender_failure_explains_verification(self):
+        body = '{"errors": [{"message": "The from address does not match a verified Sender Identity."}]}'
+        message = _sendgrid_failure(403, body)
+
+        self.assertIn("SendGrid rejected the message (403)", message)
+        self.assertIn("Single Sender Verification", message)
+
+    def test_bad_api_key_failure_is_called_out(self):
+        body = '{"errors": [{"message": "The provided authorization grant is invalid, expired, or revoked"}]}'
+        message = _sendgrid_failure(401, body)
+
+        self.assertIn("The API key was rejected", message)
+        self.assertIn("Mail Send", message)
+
+    def test_credit_or_plan_failures_are_called_out(self):
+        message = _sendgrid_failure(413, "Maximum credits exceeded")
+
+        self.assertIn("credits", message)
+        self.assertIn("SendGrid dashboard", message)
+
+    def test_provider_detail_and_hint_read_as_two_sentences(self):
+        body = '{"errors":[{"message":"Maximum credits exceeded"}]}'
+
+        message = _sendgrid_failure(401, body)
+
+        self.assertIn("(401): Maximum credits exceeded. The SendGrid account", message)
+    def test_json_envelope_is_reduced_to_sendgrids_own_message(self):
+        body = '{"errors":[{"message":"Maximum credits exceeded","field":null,"help":null}]}'
+        message = _sendgrid_failure(401, body)
+
+        self.assertIn("SendGrid rejected the message (401): Maximum credits exceeded", message)
+        self.assertNotIn("{\"errors\"", message)
+        self.assertIn("SendGrid dashboard", message)
+
+    def test_several_provider_messages_are_joined(self):
+        body = '{"errors":[{"message":"first problem"},{"message":"second problem"}]}'
+
+        self.assertIn("first problem; second problem", _sendgrid_failure(400, body))
+
+    def test_non_json_body_is_passed_through_untouched(self):
+        self.assertIn("gateway blew up", _sendgrid_failure(502, "<html>gateway blew up</html>"))
+
+    def test_empty_errors_list_falls_back_to_the_raw_body(self):
+        self.assertIn('{"errors": []}', _sendgrid_failure(400, '{"errors": []}'))
+    def test_unmapped_failure_keeps_the_provider_body(self):
+        message = _sendgrid_failure(400, "bad request payload")
+
+        self.assertEqual(message, "SendGrid rejected the message (400): bad request payload.")
+
+    def test_empty_body_is_reported(self):
+        self.assertIn("empty response body", _sendgrid_failure(500, ""))
+
+
+class SendGridProbeScopeTests(TestCase):
+    @override_settings(**SENDGRID_SETTINGS)
+    def test_key_without_mail_send_scope_is_flagged(self):
+        response = FakeResponse(status=200, body=b'{"scopes": ["sender_verification_eligible"]}')
+        with mock.patch("invoice.email_utils.urlrequest.urlopen", return_value=response):
+            report = probe_email_provider()
+
+        self.assertFalse(report["ok"])
+        self.assertIn("mail.send", report["detail"])
+
+    @override_settings(**SENDGRID_SETTINGS)
+    def test_key_with_mail_send_scope_passes(self):
+        response = FakeResponse(status=200, body=b'{"scopes": ["mail.send", "sender_verification_eligible"]}')
+        with mock.patch("invoice.email_utils.urlrequest.urlopen", return_value=response):
+            report = probe_email_provider()
+
+        self.assertTrue(report["ok"])
+        self.assertIn("mail.send", report["detail"])
+
+
+class SendGridCreditsProbeTests(TestCase):
+    def _probe_with(self, credits_body):
+        scopes = FakeResponse(status=200, body=b'{"scopes": ["mail.send"]}')
+        credits = FakeResponse(status=200, body=credits_body)
+        with mock.patch("invoice.email_utils.urlrequest.urlopen", side_effect=[scopes, credits]):
+            return probe_email_provider()
+
+    @override_settings(**SENDGRID_SETTINGS)
+    def test_exhausted_credit_balance_is_reported_as_the_cause(self):
+        report = self._probe_with(b'{"remain": 0, "total": 40, "overage": 0, "used": 40}')
+
+        self.assertFalse(report["ok"])
+        self.assertIn("0 of 40 email credits remaining", report["detail"])
+        self.assertIn("Maximum credits", report["detail"])
+
+    @override_settings(**SENDGRID_SETTINGS)
+    def test_remaining_balance_is_included_in_a_healthy_probe(self):
+        report = self._probe_with(b'{"remain": 37, "total": 40, "overage": 0, "used": 3}')
+
+        self.assertTrue(report["ok"])
+        self.assertIn("Credits remaining: 37 of 40", report["detail"])
+
+    @override_settings(**SENDGRID_SETTINGS)
+    def test_daily_limit_plan_reporting_zero_of_zero_is_not_flagged(self):
+        report = self._probe_with(b'{"remain": 0, "total": 0, "overage": 0, "used": 0}')
+
+        self.assertTrue(report["ok"])
+
+    @override_settings(**SENDGRID_SETTINGS)
+    def test_unreadable_balance_does_not_fail_the_probe(self):
+        scopes = FakeResponse(status=200, body=b'{"scopes": ["mail.send"]}')
+        denied = urlerror.HTTPError("u", 403, "forbidden", None, None)
+        with mock.patch("invoice.email_utils.urlrequest.urlopen", side_effect=[scopes, denied]):
+            report = probe_email_provider()
+
+        self.assertTrue(report["ok"])
+
+class SendGridDiagnosticsTests(TestCase):
+    @override_settings(
+        **{
+            **SENDGRID_SETTINGS,
+            "EMAIL_HOST": "smtp.gmail.com",
+            "EMAIL_HOST_USER": "vinnbalvins@gmail.com",
+            "EMAIL_HOST_PASSWORD": "app-password",
+        }
+    )
+    def test_warns_that_smtp_settings_are_ignored_for_sendgrid(self):
+        report = email_diagnostics()
+
+        self.assertTrue(report["ready"])
+        self.assertIn("EMAIL_HOST_*", " ".join(report["warnings"]))
+
+    @override_settings(**{**SENDGRID_SETTINGS, "SENDGRID_API_KEY": "not-a-sendgrid-key"})
+    def test_flags_keys_without_the_sg_prefix(self):
+        report = email_diagnostics()
+
+        self.assertEqual(report["sendgrid_api_key_prefix"], "not")
+        self.assertIn("SG.", " ".join(report["warnings"]))
+
+    @override_settings(**SENDGRID_SETTINGS)
+    def test_reports_values_that_needed_sanitising(self):
+        with mock.patch.dict("os.environ", {"SENDGRID_FROM_EMAIL": ' "billing@example.com"\n'}):
+            report = email_diagnostics()
+
+        self.assertIn("SENDGRID_FROM_EMAIL", report["env_values_sanitized"])
+
+    @override_settings(**SENDGRID_SETTINGS)
+    def test_clean_values_are_not_reported_as_sanitised(self):
+        with mock.patch.dict("os.environ", {"SENDGRID_FROM_EMAIL": "billing@example.com"}):
+            report = email_diagnostics()
+
+        self.assertEqual(report["env_values_sanitized"], {})
+
+
+class TlsFlagNormalisationTests(SimpleTestCase):
+    """EMAIL_USE_SSL and EMAIL_USE_TLS must never both be true (Django rejects that)."""
+
+    def test_conflicting_flags_on_port_465_prefer_ssl(self):
+        self.assertEqual(_normalise_tls_flags(465, True, True), (True, False))
+
+    def test_conflicting_flags_on_starttls_port_prefer_tls(self):
+        self.assertEqual(_normalise_tls_flags(587, True, True), (False, True))
+
+    def test_non_conflicting_flags_are_left_alone(self):
+        self.assertEqual(_normalise_tls_flags(465, True, False), (True, False))
+        self.assertEqual(_normalise_tls_flags(587, False, True), (False, True))
+        self.assertEqual(_normalise_tls_flags(25, False, False), (False, False))
+
+
+class SmtpInvalidSettingsTranslationTests(SimpleTestCase):
+    @override_settings(**SMTP_SETTINGS)
+    def test_django_mutual_exclusion_error_is_explained(self):
+        error = ValueError(
+            "EMAIL_USE_TLS/EMAIL_USE_SSL are mutually exclusive, so only set one of "
+            "those settings to True."
+        )
+        with mock.patch("invoice.email_utils.EmailMultiAlternatives") as message_factory:
+            message_factory.return_value.send.side_effect = error
+            with self.assertRaises(InvoiceEmailError) as ctx:
+                send_email_message(subject="Hi", recipients=["client@example.com"], text_content="Body")
+
+        message = str(ctx.exception)
+        self.assertIn("SMTP settings are invalid", message)
+        self.assertIn("EMAIL_USE_TLS", message)
+
+    @override_settings(**SMTP_SETTINGS)
+    def test_probe_reports_invalid_smtp_settings_without_raising(self):
+        with mock.patch(
+            "invoice.email_utils.get_connection",
+            side_effect=ValueError("EMAIL_USE_TLS/EMAIL_USE_SSL are mutually exclusive"),
+        ):
+            report = probe_email_provider()
+
+        self.assertFalse(report["ok"])
+        self.assertIn("EMAIL_USE_TLS", report["detail"])
+
+
+class SendGridSenderDiagnosticsTests(TestCase):
+    @override_settings(**{**SENDGRID_SETTINGS, "SENDGRID_FROM_EMAIL": "vinnbalvins@gmail.com"})
+    def test_consumer_mailbox_sender_is_flagged_for_verification(self):
+        report = email_diagnostics()
+
+        warnings = " ".join(report["warnings"])
+        self.assertIn("vinnbalvins@gmail.com", warnings)
+        self.assertIn("Single Sender Verification", warnings)
+
+    @override_settings(**SENDGRID_SETTINGS)
+    def test_owned_domain_sender_is_not_flagged(self):
+        report = email_diagnostics()
+
+        self.assertNotIn("Single Sender Verification", " ".join(report["warnings"]))
