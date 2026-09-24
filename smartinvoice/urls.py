@@ -1,8 +1,12 @@
 # smartinvoice/urls.py
+import re
+
 from django.contrib import admin
 from django.urls import path, include, re_path
 from django.conf import settings
 from django.conf.urls.static import static
+from django.core.files.storage import FileSystemStorage, default_storage
+from django.views.static import serve
 from rest_framework import permissions
 from drf_yasg.views import get_schema_view
 from drf_yasg import openapi
@@ -42,8 +46,20 @@ urlpatterns = [
     path('api/ai/', include('ai.urls')),
 ]
 
+# Uploaded media (business logos) is served by Django whenever storage is
+# local. It cannot live inside the DEBUG block: with DEBUG=False the static()
+# helper is inert, so every logo URL the API returned answered 404 and uploads
+# looked like they were never saved.
+if isinstance(default_storage, FileSystemStorage) and settings.MEDIA_URL.startswith("/"):
+    urlpatterns += [
+        re_path(
+            rf"^{re.escape(settings.MEDIA_URL.lstrip('/'))}(?P<path>.*)$",
+            serve,
+            {"document_root": settings.MEDIA_ROOT},
+        )
+    ]
+
 if settings.DEBUG:
-    urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
     urlpatterns += static(settings.STATIC_URL, document_root=settings.STATIC_ROOT)
     
     # Debug toolbar

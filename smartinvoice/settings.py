@@ -193,7 +193,9 @@ STATICFILES_STORAGE = "whitenoise.storage.CompressedManifestStaticFilesStorage"
 STATICFILES_DIRS = [BASE_DIR / "static"] if (BASE_DIR / "static").exists() else []
 
 MEDIA_URL = "/media/"
-MEDIA_ROOT = BASE_DIR / "media"
+# Override with a mounted disk path on hosts with ephemeral storage, e.g.
+# MEDIA_ROOT=/var/data/media, so uploaded logos survive redeploys.
+MEDIA_ROOT = env("MEDIA_ROOT", default=str(BASE_DIR / "media"))
 
 # Cloudinary (optional) for media storage in production.
 CLOUDINARY_URL = env("CLOUDINARY_URL", default="")

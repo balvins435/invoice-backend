@@ -178,3 +178,65 @@ class LogoFetchingTestCase(TestCase):
         pdf_buffer = generate_invoice_pdf(invoice)
         self.assertIsNotNone(pdf_buffer)
         self.assertGreater(len(pdf_buffer.getvalue()), 0)
+
+
+class InvoiceTemplateRenderingTestCase(TestCase):
+    """The redesigned template must survive awkward but legal business data."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(
+            email="templates@example.com",
+            password="testpass123",
+        )
+
+    @staticmethod
+    def _logo():
+        image = PILImage.new("RGBA", (240, 120), color=(15, 23, 42, 255))
+        image_file = BytesIO()
+        image.save(image_file, format="PNG")
+        image_file.seek(0)
+        return SimpleUploadedFile("brand.png", image_file.getvalue(), content_type="image/png")
+
+    def _business(self, **overrides):
+        defaults = {
+            "owner": self.user,
+            "name": "Bright & Co",
+            "email": "hello@bright.co.ke",
+            "phone": "+254712345678",
+            "address": "Karen Office Park\nLangata Road & Ngong Road",
+        }
+        defaults.update(overrides)
+        return Business.objects.create(**defaults)
+
+    def _invoice(self, business, **overrides):
+        defaults = {
+            "client_name": "Acme Holdings Limited",
+            "client_email": "accounts@acme.co.ke",
+            "issue_date": "2026-09-02",
+            "due_date": "2026-09-30",
+            "subtotal": Decimal("1200.00"),
+            "tax_amount": Decimal("192.00"),
+            "total_amount": Decimal("1392.00"),
+        }
+        defaults.update(overrides)
+        return Invoice.objects.create(business=business, **defaults)
+
+    def test_pdf_escapes_xml_special_characters(self):
+        """Ampersands and angle brackets in business data must not break the PDF."""
+        business = self._business(name="Bright & Co <Holdings>")
+        invoice = self._invoice(business, client_name="Tom & Jerry Ltd")
+        pdf_buffer = generate_invoice_pdf(invoice)
+        self.assertTrue(pdf_buffer.getvalue().startswith(b"%PDF"))
+
+    def test_pdf_renders_for_every_template(self):
+        for template in ("classic", "modern", "minimal"):
+            business = self._business(name=f"Template Business {template}")
+            invoice = self._invoice(business, template=template)
+            pdf_buffer = generate_invoice_pdf(invoice)
+            self.assertTrue(pdf_buffer.getvalue().startswith(b"%PDF"))
+
+    def test_pdf_supports_circular_logo_shape(self):
+        business = self._business(name="Circle Logo Business", logo_shape="circle", logo=self._logo())
+        invoice = self._invoice(business)
+        pdf_buffer = generate_invoice_pdf(invoice)
+        self.assertTrue(pdf_buffer.getvalue().startswith(b"%PDF"))

@@ -50,6 +50,8 @@ BRAND_WARNING_BG = colors.HexColor("#FEF3C7")
 BRAND_WARNING_TEXT = colors.HexColor("#92400E")
 BRAND_DANGER_BG = colors.HexColor("#FEE2E2")
 BRAND_DANGER_TEXT = colors.HexColor("#991B1B")
+
+
 def _format_amount(value):
     return f"{value:,.2f}"
 
@@ -221,6 +223,7 @@ def _load_logo(business, log_context):
         logger.warning("Failed to load logo for %s: %s", log_context, str(exc), exc_info=True)
         return None, False
 
+
 def _build_styles():
     styles = getSampleStyleSheet()
     base = styles["Normal"]
@@ -253,6 +256,7 @@ def _build_styles():
     add("NoteText", fontName="Helvetica", fontSize=8.4, leading=12.5, textColor=colors.HexColor("#334155"))
     add("FinePrint", fontName="Helvetica", fontSize=7.4, leading=10.5, textColor=BRAND_MUTED)
     return styles
+
 
 def _template_palette(template):
     if template == "minimal":
@@ -498,6 +502,7 @@ def _build_header(eyebrow, title, contact_lines, meta_pairs, badge_text, badge_b
         commands.append(("BOX", (0, 0), (-1, -1), 0.8, palette["header_border"]))
     header.setStyle(TableStyle(commands))
     return header
+
 
 def _build_summary_strip(cells, styles, palette):
     """A single divided card: (label, value, caption, emphasised)."""
@@ -746,6 +751,7 @@ def _business_contact_lines(business):
     if business.address:
         lines.append("<br/>".join(_esc(line) for line in str(business.address).splitlines() if line.strip()))
     return lines
+
 
 def _new_document(buffer, title, author):
     return SimpleDocTemplate(
