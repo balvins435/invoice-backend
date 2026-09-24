@@ -38,6 +38,12 @@ class BusinessLogoUploadTests(TestCase):
         self.client = APIClient()
         self.client.force_authenticate(self.user)
 
+    def tearDown(self):
+        # Uploaded files land in MEDIA_ROOT, so remove them with the test data.
+        for business in Business.objects.all():
+            if business.logo:
+                business.logo.delete(save=False)
+
     def _upload(self, action="patch"):
         if action == "patch":
             return self.client.patch(

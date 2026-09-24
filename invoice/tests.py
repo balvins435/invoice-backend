@@ -197,6 +197,12 @@ class InvoiceTemplateRenderingTestCase(TestCase):
         image_file.seek(0)
         return SimpleUploadedFile("brand.png", image_file.getvalue(), content_type="image/png")
 
+    def tearDown(self):
+        # Logo uploads land in MEDIA_ROOT, so remove them with the test data.
+        for business in Business.objects.all():
+            if business.logo:
+                business.logo.delete(save=False)
+
     def _business(self, **overrides):
         defaults = {
             "owner": self.user,
