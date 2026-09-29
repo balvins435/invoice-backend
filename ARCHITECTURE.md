@@ -22,3 +22,11 @@ The convention now covers invoices, businesses, expenses, payments, tax,
 messaging, reports, users, and AI. Provider integrations remain behind dedicated
 adapters for M-Pesa, eTIMS, WhatsApp, email, PDF, and AI services. Existing routes,
 database tables, migrations, and client contracts remain unchanged.
+
+## Invoice lifecycle
+
+Drafts are the only mutable invoice state. `PATCH /api/invoice/<id>/` replaces the
+line items, recalculates subtotal, tax, and total from the business tax rate, and
+keeps the invoice number. Once an invoice is sent or paid the endpoint returns
+`409 invoice_not_editable`, because the client already holds a copy. Editing never
+flips the status; sending stays a separate, explicit action.

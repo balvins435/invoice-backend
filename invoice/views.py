@@ -2,6 +2,7 @@ import logging
 
 from rest_framework import viewsets, permissions, status
 from rest_framework.decorators import action
+from rest_framework.exceptions import APIException
 from rest_framework.response import Response
 
 from .serializers import InvoiceSerializer
@@ -17,6 +18,15 @@ from .selectors import filter_invoices, invoices_for_user
 
 logger = logging.getLogger(__name__)
 
+# Invoices are only editable while they are still a draft. Once an invoice has
+# been sent (or paid) the client holds a copy, so it must not change silently.
+EDITABLE_INVOICE_STATUSES = frozenset({'draft'})
+
+
+class InvoiceNotEditable(APIException):
+    status_code = status.HTTP_409_CONFLICT
+    default_detail = 'Only draft invoices can be edited.'
+    default_code = 'invoice_not_editable'
 
 
 class InvoiceViewSet(viewsets.ModelViewSet):
@@ -25,6 +35,15 @@ class InvoiceViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         return filter_invoices(invoices_for_user(self.request.user), self.request.query_params)
+
+    def update(self, request, *args, **kwargs):
+        invoice = self.get_object()
+        if invoice.status not in EDITABLE_INVOICE_STATUSES:
+            raise InvoiceNotEditable(
+                f'{invoice.invoice_number} is {invoice.get_status_display().lower()} '
+                'and can no longer be edited. Only draft invoices can be changed.'
+            )
+        return super().update(request, *args, **kwargs)
 
     @action(detail=False, methods=['get'])
     def templates(self, request):

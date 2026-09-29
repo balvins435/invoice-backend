@@ -496,3 +496,171 @@ class RemoteStorageLogoTestCase(TestCase):
         self.business.refresh_from_db()
         self.assertIsNone(logo_bytes(self.business))
         self.assertFalse(_validate_logo_file(self.business))
+
+
+class InvoiceEditingTestCase(TestCase):
+    """Draft invoices are editable; sent and paid invoices are locked."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(
+            email="editor@example.com",
+            password="testpass123",
+        )
+        self.client = APIClient()
+        self.client.force_authenticate(self.user)
+        self.business = Business.objects.create(
+            owner=self.user,
+            name="Edit Draft Co",
+            email="billing@example.com",
+            phone="0700000000",
+            address="Nairobi",
+            tax_rate=Decimal("16.00"),
+        )
+
+    def _create_invoice(self, **overrides):
+        payload = {
+            "business_id": self.business.id,
+            "client_name": "Acme Holdings",
+            "client_email": "accounts@acme.co.ke",
+            "issue_date": "2026-09-02",
+            "due_date": "2026-09-30",
+            "items": [
+                {"description": "Design", "quantity": 1, "unit_price": "100.00", "total": "100.00"}
+            ],
+        }
+        payload.update(overrides)
+        response = self.client.post("/api/invoice/", payload, format="json")
+        self.assertEqual(response.status_code, 201, response.data)
+        return response.data
+
+    def test_draft_invoice_can_add_items_change_template_and_dates(self):
+        invoice = self._create_invoice()
+        self.assertEqual(invoice["status"], "draft")
+        self.assertEqual(len(invoice["items"]), 1)
+
+        updated = self.client.patch(
+            f"/api/invoice/{invoice['id']}/",
+            {
+                "client_name": "Acme Holdings Ltd",
+                "due_date": "2026-10-15",
+                "template": "letterhead",
+                "items": [
+                    {"description": "Design", "quantity": 1, "unit_price": "100.00", "total": "100.00"},
+                    {"description": "Hosting", "quantity": 2, "unit_price": "100.00", "total": "200.00"},
+                ],
+            },
+            format="json",
+        )
+
+        self.assertEqual(updated.status_code, 200, updated.data)
+        self.assertEqual(updated.data["client_name"], "Acme Holdings Ltd")
+        self.assertEqual(updated.data["due_date"], "2026-10-15")
+        self.assertEqual(updated.data["template"], "letterhead")
+        self.assertEqual(len(updated.data["items"]), 2)
+        self.assertEqual(Decimal(updated.data["subtotal"]), Decimal("300.00"))
+        self.assertEqual(Decimal(updated.data["tax_amount"]), Decimal("48.00"))
+        self.assertEqual(Decimal(updated.data["total_amount"]), Decimal("348.00"))
+
+        stored = Invoice.objects.get(pk=invoice["id"])
+        self.assertEqual(stored.items.count(), 2)
+        self.assertEqual(stored.invoice_number, invoice["invoice_number"])
+        self.assertEqual(resolve_invoice_template(stored), "letterhead")
+
+    def test_editing_replaces_line_items_instead_of_appending(self):
+        invoice = self._create_invoice()
+
+        updated = self.client.patch(
+            f"/api/invoice/{invoice['id']}/",
+            {
+                "items": [
+                    {"description": "Consulting", "quantity": 3, "unit_price": "50.00", "total": "150.00"}
+                ]
+            },
+            format="json",
+        )
+
+        self.assertEqual(updated.status_code, 200, updated.data)
+        self.assertEqual([item["description"] for item in updated.data["items"]], ["Consulting"])
+        self.assertEqual(InvoiceItem.objects.filter(invoice_id=invoice["id"]).count(), 1)
+        self.assertEqual(Decimal(updated.data["total_amount"]), Decimal("174.00"))
+
+    def test_editing_without_items_keeps_existing_line_items(self):
+        invoice = self._create_invoice()
+
+        updated = self.client.patch(
+            f"/api/invoice/{invoice['id']}/",
+            {"client_email": "new-address@acme.co.ke"},
+            format="json",
+        )
+
+        self.assertEqual(updated.status_code, 200, updated.data)
+        self.assertEqual(updated.data["client_email"], "new-address@acme.co.ke")
+        self.assertEqual([item["description"] for item in updated.data["items"]], ["Design"])
+        self.assertEqual(Decimal(updated.data["total_amount"]), Decimal("116.00"))
+
+    def test_sent_invoice_cannot_be_edited(self):
+        invoice = self._create_invoice(status="sent")
+
+        response = self.client.patch(
+            f"/api/invoice/{invoice['id']}/",
+            {
+                "client_name": "Tampered",
+                "items": [
+                    {"description": "Tampered", "quantity": 1, "unit_price": "1.00", "total": "1.00"}
+                ],
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 409, response.data)
+        self.assertEqual(response.data["detail"].split()[0], invoice["invoice_number"])
+        stored = Invoice.objects.get(pk=invoice["id"])
+        self.assertEqual(stored.client_name, "Acme Holdings")
+        self.assertEqual(stored.items.count(), 1)
+        self.assertEqual(stored.items.first().description, "Design")
+
+    def test_paid_invoice_cannot_be_edited(self):
+        invoice = self._create_invoice()
+        mark_paid = self.client.post(f"/api/invoice/{invoice['id']}/mark_paid/")
+        self.assertEqual(mark_paid.status_code, 200, mark_paid.data)
+
+        response = self.client.patch(
+            f"/api/invoice/{invoice['id']}/",
+            {"client_name": "Tampered"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 409, response.data)
+        self.assertEqual(Invoice.objects.get(pk=invoice["id"]).client_name, "Acme Holdings")
+
+    def test_a_draft_can_be_edited_repeatedly(self):
+        invoice = self._create_invoice()
+        first = self.client.patch(
+            f"/api/invoice/{invoice['id']}/",
+            {"client_name": "First Pass"},
+            format="json",
+        )
+        second = self.client.patch(
+            f"/api/invoice/{invoice['id']}/",
+            {"client_name": "Second Pass"},
+            format="json",
+        )
+
+        self.assertEqual(first.status_code, 200, first.data)
+        self.assertEqual(second.status_code, 200, second.data)
+        self.assertEqual(second.data["client_name"], "Second Pass")
+        self.assertEqual(Invoice.objects.get(pk=invoice["id"]).client_name, "Second Pass")
+
+    def test_only_the_owner_can_edit_a_draft(self):
+        invoice = self._create_invoice()
+        outsider = User.objects.create_user(email="outsider@example.com", password="testpass123")
+        self.client.force_authenticate(outsider)
+
+        response = self.client.patch(
+            f"/api/invoice/{invoice['id']}/",
+            {"client_name": "Hijacked"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 404, response.data)
+        self.assertEqual(Invoice.objects.get(pk=invoice["id"]).client_name, "Acme Holdings")
