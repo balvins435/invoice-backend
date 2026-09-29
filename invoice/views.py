@@ -8,7 +8,7 @@ from .serializers import InvoiceSerializer
 from .permissions import IsBusinessOwner
 
 from django.http import FileResponse
-from .utils import generate_invoice_pdf, generate_receipt_pdf
+from .utils import generate_invoice_pdf, generate_receipt_pdf, invoice_template_catalogue
 
 from .email_utils import EmailConfigurationError, InvoiceEmailError
 from .email_utils import email_diagnostics as email_diagnostics_report
@@ -25,6 +25,11 @@ class InvoiceViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         return filter_invoices(invoices_for_user(self.request.user), self.request.query_params)
+
+    @action(detail=False, methods=['get'])
+    def templates(self, request):
+        """Catalogue of invoice templates so clients can render real samples."""
+        return Response(invoice_template_catalogue())
 
     @action(detail=True, methods=['post'])
     def mark_paid(self, request, pk=None):

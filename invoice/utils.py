@@ -11,6 +11,7 @@ from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
 from reportlab.platypus import (
+    HRFlowable,
     Image,
     KeepTogether,
     Paragraph,
@@ -50,6 +51,15 @@ BRAND_WARNING_BG = colors.HexColor("#FEF3C7")
 BRAND_WARNING_TEXT = colors.HexColor("#92400E")
 BRAND_DANGER_BG = colors.HexColor("#FEE2E2")
 BRAND_DANGER_TEXT = colors.HexColor("#991B1B")
+
+TEMPLATE_LETTERHEAD = "letterhead"
+LETTERHEAD_INK = colors.HexColor("#111827")
+LETTERHEAD_MUTED = colors.HexColor("#52525B")
+LETTERHEAD_RULE = colors.HexColor("#18181B")
+LETTERHEAD_HAIRLINE = colors.HexColor("#D4D4D8")
+LETTERHEAD_HEAD_BG = colors.HexColor("#F4F4F5")
+LETTERHEAD_LEFT = 96 * mm
+LETTERHEAD_RIGHT = CONTENT_WIDTH - LETTERHEAD_LEFT
 
 
 def _format_amount(value):
@@ -303,6 +313,8 @@ def _template_palette(template):
             "table_head_rule": BRAND_TEXT,
             "grand_bg": BRAND_TEXT,
             "grand_text": colors.white,
+            "border": BRAND_BORDER,
+            "surface": BRAND_SURFACE,
         }
     if template == "modern":
         accent = colors.HexColor("#047857")
@@ -323,6 +335,29 @@ def _template_palette(template):
             "table_head_rule": accent,
             "grand_bg": accent,
             "grand_text": colors.white,
+            "border": colors.HexColor("#D1FAE5"),
+            "surface": colors.white,
+        }
+    if template == TEMPLATE_LETTERHEAD:
+        return {
+            "header_bg": colors.white,
+            "header_border": LETTERHEAD_RULE,
+            "header_text": LETTERHEAD_INK,
+            "header_soft": LETTERHEAD_MUTED,
+            "header_eyebrow": LETTERHEAD_MUTED,
+            "accent": LETTERHEAD_RULE,
+            "logo_plate": None,
+            "logo_plate_dark": None,
+            "logo_chip_border": None,
+            "hero_bg": colors.white,
+            "hero_text": LETTERHEAD_INK,
+            "table_head_bg": LETTERHEAD_HEAD_BG,
+            "table_head_text": LETTERHEAD_INK,
+            "table_head_rule": LETTERHEAD_RULE,
+            "grand_bg": colors.white,
+            "grand_text": LETTERHEAD_INK,
+            "border": LETTERHEAD_HAIRLINE,
+            "surface": colors.white,
         }
     return {
         "header_bg": BRAND_NAVY,
@@ -341,6 +376,8 @@ def _template_palette(template):
         "table_head_rule": BRAND_ACCENT,
         "grand_bg": BRAND_NAVY,
         "grand_text": colors.white,
+        "border": BRAND_BORDER,
+        "surface": BRAND_SURFACE,
     }
 
 
@@ -354,6 +391,70 @@ def _apply_invoice_template_styles(styles, palette):
     styles["GrandLabel"].textColor = palette["grand_text"]
     styles["GrandValue"].textColor = palette["grand_text"]
     return styles
+
+
+TEMPLATE_LAYOUTS = {
+    "classic": "hero",
+    "modern": "hero",
+    "minimal": "hero",
+    TEMPLATE_LETTERHEAD: "letterhead",
+}
+
+TEMPLATE_META = (
+    ("classic", "Classic", "Deep navy header with a bold, structured summary strip."),
+    ("modern", "Modern", "Fresh emerald header for a confident, contemporary look."),
+    ("minimal", "Minimal", "Quiet whitespace with hairline rules and understated type."),
+    (TEMPLATE_LETTERHEAD, "Letterhead", "Timeless letterhead with a ruled, bordered table."),
+)
+
+TEMPLATE_IDS = tuple(entry[0] for entry in TEMPLATE_META)
+
+
+def _hex_color(value):
+    if value is None:
+        return None
+    red, green, blue = (max(0.0, min(1.0, channel)) for channel in value.rgb())
+    return "#{:02X}{:02X}{:02X}".format(
+        int(round(red * 255)),
+        int(round(green * 255)),
+        int(round(blue * 255)),
+    )
+
+
+def invoice_template_catalogue():
+    """Describe every invoice template so the UI can render real samples."""
+    catalogue = []
+    for template_id, name, description in TEMPLATE_META:
+        palette = _template_palette(template_id)
+        catalogue.append(
+            {
+                "id": template_id,
+                "name": name,
+                "description": description,
+                "layout": TEMPLATE_LAYOUTS[template_id],
+                "palette": {
+                    key: _hex_color(value)
+                    for key, value in palette.items()
+                    if value is not None
+                },
+            }
+        )
+    return catalogue
+
+
+def resolve_invoice_template(invoice, template=None):
+    """Resolve a render template: explicit choice, invoice, business default, classic."""
+    business = getattr(invoice, "business", None)
+    candidates = (
+        template,
+        getattr(invoice, "template", None),
+        getattr(business, "default_invoice_template", None),
+    )
+    for candidate in candidates:
+        normalized = str(candidate or "").strip().lower()
+        if normalized in TEMPLATE_IDS:
+            return normalized
+    return "classic"
 
 
 def _build_pill(text, background, text_color, width=PILL_WIDTH):
@@ -809,19 +910,328 @@ def _flush_row(cells):
     return row
 
 
+def _letterhead_plain_style():
+    return TableStyle(
+        [
+            ("LEFTPADDING", (0, 0), (-1, -1), 0),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+            ("TOPPADDING", (0, 0), (-1, -1), 0),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ]
+    )
+
+
+def _letterhead_styles(styles):
+    ink = LETTERHEAD_INK
+    add = styles.add
+    add(ParagraphStyle("LetterheadBrand", parent=styles["Normal"], fontName="Helvetica-Bold", fontSize=20, leading=24, textColor=ink))
+    add(ParagraphStyle("LetterheadContact", parent=styles["Normal"], fontName="Helvetica", fontSize=8.6, leading=12.4, textColor=LETTERHEAD_MUTED))
+    add(ParagraphStyle("LetterheadTitle", parent=styles["Normal"], fontName="Helvetica-Bold", fontSize=26, leading=30, alignment=2, textColor=ink))
+    add(ParagraphStyle("LetterheadTitleSub", parent=styles["Normal"], fontName="Helvetica", fontSize=8.6, leading=12.4, alignment=2, textColor=LETTERHEAD_MUTED))
+    add(ParagraphStyle("LetterheadLabel", parent=styles["Normal"], fontName="Helvetica-Bold", fontSize=7.6, leading=11, charSpace=0.9, textColor=LETTERHEAD_MUTED))
+    add(ParagraphStyle("LetterheadBillName", parent=styles["Normal"], fontName="Helvetica-Bold", fontSize=11.5, leading=15.5, textColor=ink))
+    add(ParagraphStyle("LetterheadBillLine", parent=styles["Normal"], fontName="Helvetica", fontSize=9, leading=13, textColor=LETTERHEAD_MUTED))
+    add(ParagraphStyle("LetterheadMetaLabel", parent=styles["Normal"], fontName="Helvetica", fontSize=8.6, leading=14, alignment=2, textColor=LETTERHEAD_MUTED))
+    add(ParagraphStyle("LetterheadMetaValue", parent=styles["Normal"], fontName="Helvetica-Bold", fontSize=8.6, leading=14, textColor=ink))
+    add(ParagraphStyle("LetterheadHead", parent=styles["Normal"], fontName="Helvetica-Bold", fontSize=8.2, leading=11, textColor=ink))
+    add(ParagraphStyle("LetterheadCell", parent=styles["Normal"], fontName="Helvetica", fontSize=9.2, leading=12.6, textColor=ink))
+    add(ParagraphStyle("LetterheadCellStrong", parent=styles["Normal"], fontName="Helvetica-Bold", fontSize=9.2, leading=12.6, textColor=ink))
+    add(ParagraphStyle("LetterheadTotalLabel", parent=styles["Normal"], fontName="Helvetica", fontSize=9.2, leading=14, alignment=2, textColor=LETTERHEAD_MUTED))
+    add(ParagraphStyle("LetterheadTotalValue", parent=styles["Normal"], fontName="Helvetica", fontSize=9.2, leading=14, alignment=2, textColor=ink))
+    add(ParagraphStyle("LetterheadTotalDueLabel", parent=styles["Normal"], fontName="Helvetica-Bold", fontSize=10.5, leading=15, alignment=2, textColor=ink))
+    add(ParagraphStyle("LetterheadTotalDueValue", parent=styles["Normal"], fontName="Helvetica-Bold", fontSize=12.5, leading=16, alignment=2, textColor=ink))
+    add(ParagraphStyle("LetterheadNote", parent=styles["Normal"], fontName="Helvetica", fontSize=8.4, leading=12.6, textColor=LETTERHEAD_MUTED))
+    return styles
+
+
+def _coerce_date(value):
+    """Accept a real date or the ISO strings used by API payloads."""
+    if isinstance(value, datetime.date):
+        return value
+    if isinstance(value, str) and value.strip():
+        try:
+            return datetime.date.fromisoformat(value.strip()[:10])
+        except ValueError:
+            return None
+    return None
+
+
+def _letterhead_contact_lines(business):
+    lines = []
+    for line in str(business.address or "").splitlines():
+        if line.strip():
+            lines.append(escape(line.strip()))
+    contact = "&nbsp;&nbsp;&middot;&nbsp;&nbsp;".join(
+        escape(str(value)) for value in (business.phone, business.email) if value
+    )
+    if contact:
+        lines.append(contact)
+    return lines
+
+
+def _letterhead_brand(logo, is_light, business_name, contact_lines, styles, width):
+    text_rows = [[Paragraph(escape(business_name), styles["LetterheadBrand"])]]
+    for line in contact_lines:
+        text_rows.append([Paragraph(line, styles["LetterheadContact"])])
+
+    if logo is None:
+        block = Table(text_rows, colWidths=[width])
+        block.setStyle(_letterhead_plain_style())
+        return block
+
+    max_mark = 20 * mm
+    scale = min(1.0, max_mark / max(logo.drawWidth, 1), max_mark / max(logo.drawHeight, 1))
+    logo.drawWidth *= scale
+    logo.drawHeight *= scale
+    logo.hAlign = "CENTER"
+
+    if is_light:
+        mark = _build_logo_chip(logo, BRAND_NAVY, None, 6)
+        mark_width = logo.drawWidth + 2 * LOGO_CHIP_PAD
+    else:
+        mark = logo
+        mark_width = logo.drawWidth
+
+    gutter = 4.5 * mm
+    text_width = width - mark_width - gutter
+    text = Table(text_rows, colWidths=[text_width])
+    text.setStyle(_letterhead_plain_style())
+
+    block = Table([[mark, text]], colWidths=[mark_width + gutter, text_width])
+    style = _letterhead_plain_style()
+    style.add("VALIGN", (0, 0), (-1, -1), "MIDDLE")
+    block.setStyle(style)
+    return block
+
+
+def _letterhead_parties(invoice, styles):
+    bill_rows = [[Paragraph("Bill To", styles["LetterheadLabel"])]]
+    bill_rows.append([Paragraph(escape(invoice.client_name or ""), styles["LetterheadBillName"])])
+    if invoice.client_email:
+        bill_rows.append([Paragraph(escape(invoice.client_email), styles["LetterheadBillLine"])])
+    bill = Table(bill_rows, colWidths=[LETTERHEAD_LEFT])
+    bill.setStyle(_letterhead_plain_style())
+
+    terms = "Due on receipt"
+    issue_date = _coerce_date(invoice.issue_date)
+    due_date = _coerce_date(invoice.due_date)
+    if issue_date and due_date:
+        days = (due_date - issue_date).days
+        if days > 0:
+            terms = f"Net {days}"
+
+    pairs = [
+        ("Invoice Number", invoice.invoice_number),
+        ("Date", _format_date(invoice.issue_date)),
+        ("Due Date", _format_date(invoice.due_date)),
+        ("Terms", terms),
+        ("Status", (invoice.status or "draft").title()),
+    ]
+    meta_width = 62 * mm
+    meta = Table(
+        [
+            [
+                Paragraph(escape(str(label)), styles["LetterheadMetaLabel"]),
+                Paragraph(escape(str(value)), styles["LetterheadMetaValue"]),
+            ]
+            for label, value in pairs
+        ],
+        colWidths=[meta_width * 0.58, meta_width * 0.42],
+    )
+    meta.setStyle(
+        TableStyle(
+            [
+                ("ALIGN", (0, 0), (0, -1), "RIGHT"),
+                ("ALIGN", (1, 0), (1, -1), "LEFT"),
+                ("RIGHTPADDING", (0, 0), (0, -1), 9),
+                ("LEFTPADDING", (0, 0), (-1, -1), 0),
+                ("TOPPADDING", (0, 0), (-1, -1), 2.5),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 2.5),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ]
+        )
+    )
+    meta.hAlign = "RIGHT"
+
+    return _flush_row([(LETTERHEAD_LEFT, bill), (LETTERHEAD_RIGHT, meta)])
+
+
+def _letterhead_items_table(invoice, styles):
+    currency = invoice.currency or "KES"
+    rows = [
+        [
+            Paragraph("Description", styles["LetterheadHead"]),
+            Paragraph("Quantity", styles["LetterheadHead"]),
+            Paragraph("Unit price", styles["LetterheadHead"]),
+            Paragraph("Amount", styles["LetterheadHead"]),
+        ]
+    ]
+    items = list(invoice.items.all())
+    for item in items:
+        rows.append(
+            [
+                Paragraph(escape(item.description), styles["LetterheadCell"]),
+                Paragraph(escape(str(item.quantity)), styles["LetterheadCell"]),
+                Paragraph(escape(_format_money(item.unit_price, currency)), styles["LetterheadCell"]),
+                Paragraph(escape(_format_money(item.total, currency)), styles["LetterheadCellStrong"]),
+            ]
+        )
+    if not items:
+        rows.append([Paragraph("No line items on this invoice.", styles["LetterheadCell"]), "", "", ""])
+
+    table = Table(
+        rows,
+        colWidths=[CONTENT_WIDTH - 84 * mm, 20 * mm, 31 * mm, 33 * mm],
+        repeatRows=1,
+    )
+    table.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, 0), LETTERHEAD_HEAD_BG),
+                ("BOX", (0, 0), (-1, -1), 0.5, LETTERHEAD_HAIRLINE),
+                ("INNERGRID", (0, 0), (-1, -1), 0.5, LETTERHEAD_HAIRLINE),
+                ("LINEBELOW", (0, 0), (-1, 0), 1.0, LETTERHEAD_RULE),
+                ("ALIGN", (1, 0), (-1, -1), "RIGHT"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 9),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 9),
+                ("TOPPADDING", (0, 0), (-1, 0), 8),
+                ("BOTTOMPADDING", (0, 0), (-1, 0), 8),
+                ("TOPPADDING", (0, 1), (-1, -1), 9.5),
+                ("BOTTOMPADDING", (0, 1), (-1, -1), 9.5),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ]
+        )
+    )
+    return table
+
+
+def _letterhead_totals(invoice, styles, business):
+    currency = invoice.currency or "KES"
+    rows = [
+        ("Subtotal", _format_money(invoice.subtotal, currency)),
+        (f"VAT ({_format_percent(business.tax_rate)})", _format_money(invoice.tax_amount, currency)),
+    ]
+    if invoice.amount_paid:
+        rows.append(("Amount paid", _format_money(invoice.amount_paid, currency)))
+    rows.append(
+        ("Total Due", "Paid in full" if invoice.balance_due == 0 else _format_money(invoice.balance_due, currency))
+    )
+
+    table_rows = []
+    for index, (label, value) in enumerate(rows):
+        last = index == len(rows) - 1
+        table_rows.append(
+            [
+                Paragraph(escape(label), styles["LetterheadTotalDueLabel" if last else "LetterheadTotalLabel"]),
+                Paragraph(escape(value), styles["LetterheadTotalDueValue" if last else "LetterheadTotalValue"]),
+            ]
+        )
+
+    width = 78 * mm
+    commands = [
+        ("LEFTPADDING", (0, 0), (-1, -1), 0),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("LINEABOVE", (0, -1), (-1, -1), 1.0, LETTERHEAD_RULE),
+        ("TOPPADDING", (0, -1), (-1, -1), 8),
+        ("BOTTOMPADDING", (0, -1), (-1, -1), 2),
+    ]
+    if len(rows) > 1:
+        commands.extend(
+            [
+                ("TOPPADDING", (0, 0), (-1, -2), 4),
+                ("BOTTOMPADDING", (0, 0), (-1, -2), 4),
+            ]
+        )
+    table = Table(table_rows, colWidths=[width * 0.5, width * 0.5])
+    table.setStyle(TableStyle(commands))
+    table.hAlign = "RIGHT"
+    return table
+
+
+def _letterhead_notes(invoice, styles):
+    currency = invoice.currency or "KES"
+    lines = [
+        f"This invoice is currently <b>{_esc(invoice.status)}</b> with an outstanding balance of "
+        f"<b>{_esc(_format_money(invoice.balance_due, currency))}</b>."
+    ]
+    if invoice.tax_invoice_number:
+        lines.append(f"KRA eTIMS tax invoice number: <b>{_esc(invoice.tax_invoice_number)}</b>.")
+    lines.append("Thank you for your business. Please quote the invoice number as your payment reference.")
+
+    rows = [[Paragraph("Notes", styles["LetterheadLabel"])]]
+    for line in lines:
+        rows.append([Paragraph(line, styles["LetterheadNote"])])
+    block = Table(rows, colWidths=[118 * mm])
+    block.setStyle(_letterhead_plain_style())
+    return block
+
+
+def _build_letterhead_pdf(invoice, styles, buffer, business_name):
+    _letterhead_styles(styles)
+    business = invoice.business
+
+    doc = _new_document(buffer, f"Invoice {invoice.invoice_number}", business_name)
+
+    logo, _is_circular, is_light = _load_logo(
+        business,
+        f"business_id={invoice.business_id}, invoice_number={invoice.invoice_number}",
+    )
+    brand = _letterhead_brand(
+        logo,
+        is_light,
+        business_name,
+        _letterhead_contact_lines(business),
+        styles,
+        LETTERHEAD_LEFT,
+    )
+    title = Table(
+        [
+            [Paragraph("Invoice", styles["LetterheadTitle"])],
+            [Paragraph(escape(invoice.invoice_number), styles["LetterheadTitleSub"])],
+        ],
+        colWidths=[LETTERHEAD_RIGHT],
+    )
+    title.setStyle(_letterhead_plain_style())
+
+    story = [
+        _flush_row([(LETTERHEAD_LEFT, brand), (LETTERHEAD_RIGHT, title)]),
+        Spacer(1, 5 * mm),
+        HRFlowable(width="100%", thickness=1.1, color=LETTERHEAD_RULE, spaceBefore=0, spaceAfter=0),
+        Spacer(1, 7 * mm),
+        _letterhead_parties(invoice, styles),
+        Spacer(1, 9 * mm),
+        _letterhead_items_table(invoice, styles),
+        Spacer(1, 4 * mm),
+        _letterhead_totals(invoice, styles, business),
+        Spacer(1, 10 * mm),
+        _letterhead_notes(invoice, styles),
+    ]
+
+    footer_text = f"{business_name}  \u00b7  Invoice {invoice.invoice_number}"
+    doc.build(story, onFirstPage=_make_footer(footer_text), onLaterPages=_make_footer(footer_text))
+    buffer.seek(0)
+    return buffer
+
+
 def generate_invoice_pdf(invoice, template=None):
     styles = _build_styles()
-    selected_template = template or getattr(invoice, "template", "classic") or "classic"
+    selected_template = resolve_invoice_template(invoice, template)
     palette = _template_palette(selected_template)
     _apply_invoice_template_styles(styles, palette)
 
     business = invoice.business
     business_name = business.display_name or business.name
+    buffer = BytesIO()
+
+    if selected_template == TEMPLATE_LETTERHEAD:
+        return _build_letterhead_pdf(invoice, styles, buffer, business_name)
+
     currency = invoice.currency or "KES"
     amount_due = _format_money(invoice.balance_due, currency)
     settled = invoice.balance_due == 0
 
-    buffer = BytesIO()
     doc = _new_document(buffer, f"Invoice {invoice.invoice_number}", business_name)
 
     badge_background, badge_color = _status_colors(invoice.status)
@@ -938,7 +1348,7 @@ def generate_receipt_pdf(receipt):
     business = invoice.business
     business_name = business.display_name or business.name
     currency = receipt.currency or invoice.currency or "KES"
-    palette = _template_palette(getattr(invoice, "template", "classic") or "classic")
+    palette = _template_palette(resolve_invoice_template(invoice))
     _apply_invoice_template_styles(styles, palette)
 
     buffer = BytesIO()

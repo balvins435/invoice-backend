@@ -29,10 +29,12 @@ class Invoice(models.Model):
     TEMPLATE_CLASSIC = 'classic'
     TEMPLATE_MODERN = 'modern'
     TEMPLATE_MINIMAL = 'minimal'
+    TEMPLATE_LETTERHEAD = 'letterhead'
     TEMPLATE_CHOICES = (
         (TEMPLATE_CLASSIC, 'Classic'),
         (TEMPLATE_MODERN, 'Modern'),
         (TEMPLATE_MINIMAL, 'Minimal'),
+        (TEMPLATE_LETTERHEAD, 'Letterhead'),
     )
 
     STATUS_CHOICES = (
@@ -65,7 +67,9 @@ class Invoice(models.Model):
     template = models.CharField(
         max_length=20,
         choices=TEMPLATE_CHOICES,
-        default=TEMPLATE_CLASSIC,
+        blank=True,
+        default='',
+        help_text='Blank inherits the business default template.',
     )
     tax_invoice_number = models.CharField(max_length=120, blank=True, default='')
     etims_synced_at = models.DateTimeField(null=True, blank=True)

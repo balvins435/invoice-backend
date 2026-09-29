@@ -85,3 +85,43 @@ class BusinessLogoUploadTests(TestCase):
         self.assertEqual(download["Content-Type"], "image/png")
         body = b"".join(download.streaming_content)
         self.assertTrue(body.startswith(b"\x89PNG"))
+
+
+class BusinessTemplatePreferenceTests(TestCase):
+    """The invoice-template choice must round-trip and reject unknown values."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(
+            email="template-owner@example.com",
+            password="testpass123",
+        )
+        self.business = Business.objects.create(
+            owner=self.user,
+            name="Template Choice Co",
+            email="owner@example.com",
+            phone="0700000000",
+            address="Nairobi",
+        )
+        self.client = APIClient()
+        self.client.force_authenticate(self.user)
+
+    def test_default_template_is_classic(self):
+        self.assertEqual(self.business.default_invoice_template, Business.TEMPLATE_CLASSIC)
+
+    def test_letterhead_template_round_trips(self):
+        response = self.client.patch(
+            f"/api/business/{self.business.id}/",
+            {"default_invoice_template": "letterhead"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 200, response.data)
+        self.business.refresh_from_db()
+        self.assertEqual(self.business.default_invoice_template, "letterhead")
+
+    def test_unknown_template_is_rejected(self):
+        response = self.client.patch(
+            f"/api/business/{self.business.id}/",
+            {"default_invoice_template": "hologram"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 400)

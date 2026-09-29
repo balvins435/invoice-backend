@@ -7,6 +7,7 @@ from django.core.files.base import ContentFile
 from django.core.files.storage import Storage
 from django.core.files.uploadedfile import SimpleUploadedFile
 from PIL import Image as PILImage
+from rest_framework.test import APIClient
 
 from business.models import Business
 from users.models import User
@@ -14,6 +15,8 @@ from invoice.models import Invoice, InvoiceItem, Receipt
 from invoice.utils import (
     generate_invoice_pdf,
     generate_receipt_pdf,
+    invoice_template_catalogue,
+    resolve_invoice_template,
     _load_logo,
     _validate_logo_file,
     logo_bytes,
@@ -239,7 +242,7 @@ class InvoiceTemplateRenderingTestCase(TestCase):
         self.assertTrue(pdf_buffer.getvalue().startswith(b"%PDF"))
 
     def test_pdf_renders_for_every_template(self):
-        for template in ("classic", "modern", "minimal"):
+        for template in tuple(entry["id"] for entry in invoice_template_catalogue()):
             business = self._business(name=f"Template Business {template}")
             invoice = self._invoice(business, template=template)
             pdf_buffer = generate_invoice_pdf(invoice)
@@ -250,6 +253,139 @@ class InvoiceTemplateRenderingTestCase(TestCase):
         invoice = self._invoice(business)
         pdf_buffer = generate_invoice_pdf(invoice)
         self.assertTrue(pdf_buffer.getvalue().startswith(b"%PDF"))
+
+    def test_letterhead_pdf_renders_a_logo_without_a_filesystem_path(self):
+        business = self._business(name="Letterhead Logo Business", default_invoice_template="letterhead")
+        invoice = self._invoice(business, template="")
+        self.assertEqual(resolve_invoice_template(invoice), "letterhead")
+        pdf_buffer = generate_invoice_pdf(invoice)
+        self.assertTrue(pdf_buffer.getvalue().startswith(b"%PDF"))
+
+    def test_invoice_inherits_business_default_template(self):
+        business = self._business(name="Inheriting Business", default_invoice_template="modern")
+        invoice = self._invoice(business, template="")
+        self.assertEqual(resolve_invoice_template(invoice), "modern")
+
+    def test_invoice_template_beats_business_default_template(self):
+        business = self._business(name="Pinned Business", default_invoice_template="modern")
+        invoice = self._invoice(business, template="minimal")
+        self.assertEqual(resolve_invoice_template(invoice), "minimal")
+
+    def test_explicit_template_beats_everything(self):
+        business = self._business(name="Overriding Business", default_invoice_template="modern")
+        invoice = self._invoice(business, template="minimal")
+        self.assertEqual(resolve_invoice_template(invoice, "letterhead"), "letterhead")
+
+    def test_unknown_template_falls_back_to_classic(self):
+        business = self._business(name="Unknown Business")
+        invoice = self._invoice(business, template="")
+        self.assertEqual(resolve_invoice_template(invoice, "hologram"), "classic")
+
+    def test_template_catalogue_lists_every_template_with_hex_palettes(self):
+        catalogue = invoice_template_catalogue()
+        self.assertEqual(
+            [entry["id"] for entry in catalogue],
+            ["classic", "modern", "minimal", "letterhead"],
+        )
+        for entry in catalogue:
+            self.assertTrue(entry["name"])
+            self.assertTrue(entry["description"])
+            self.assertIn(entry["layout"], {"hero", "letterhead"})
+            self.assertTrue(entry["palette"])
+            for value in entry["palette"].values():
+                self.assertRegex(value, r"^#[0-9A-F]{6}$")
+
+
+class InvoiceTemplateEndpointTestCase(TestCase):
+    """The picker needs the catalogue over HTTP, authenticated only."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(
+            email="picker@example.com",
+            password="testpass123",
+        )
+        self.client = APIClient()
+        self.client.force_authenticate(self.user)
+
+    def test_templates_endpoint_returns_the_catalogue(self):
+        response = self.client.get("/api/invoice/templates/")
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(
+            [entry["id"] for entry in response.json()],
+            ["classic", "modern", "minimal", "letterhead"],
+        )
+
+    def test_templates_endpoint_requires_authentication(self):
+        self.client.force_authenticate(None)
+        response = self.client.get("/api/invoice/templates/")
+        self.assertEqual(response.status_code, 401)
+
+    def test_created_invoice_stores_the_template_and_renders_it(self):
+        business = Business.objects.create(
+            owner=self.user,
+            name="PDF Endpoint Co",
+            email="pdf@example.com",
+            phone="0700000000",
+            address="Nairobi",
+            default_invoice_template="letterhead",
+        )
+
+        created = self.client.post(
+            "/api/invoice/",
+            {
+                "business_id": business.id,
+                "client_name": "Acme Holdings",
+                "client_email": "accounts@acme.co.ke",
+                "issue_date": "2026-09-02",
+                "due_date": "2026-09-30",
+                "template": "minimal",
+                "items": [
+                    {"description": "Design", "quantity": 1, "unit_price": "100.00", "total": "100.00"}
+                ],
+            },
+            format="json",
+        )
+        self.assertEqual(created.status_code, 201, created.data)
+        self.assertEqual(created.data["template"], "minimal")
+
+        invoice_id = created.data["id"]
+        stored = self.client.get(f"/api/invoice/{invoice_id}/pdf/")
+        self.assertEqual(stored.status_code, 200)
+        self.assertTrue(b"".join(stored.streaming_content).startswith(b"%PDF"))
+
+        override = self.client.get(f"/api/invoice/{invoice_id}/pdf/?template=letterhead")
+        self.assertEqual(override.status_code, 200)
+        self.assertTrue(b"".join(override.streaming_content).startswith(b"%PDF"))
+
+    def test_created_invoice_without_a_template_inherits_the_business_default(self):
+        business = Business.objects.create(
+            owner=self.user,
+            name="Inherit Endpoint Co",
+            email="inherit@example.com",
+            phone="0700000000",
+            address="Nairobi",
+            default_invoice_template="modern",
+        )
+
+        created = self.client.post(
+            "/api/invoice/",
+            {
+                "business_id": business.id,
+                "client_name": "Acme Holdings",
+                "client_email": "accounts@acme.co.ke",
+                "issue_date": "2026-09-02",
+                "due_date": "2026-09-30",
+                "items": [
+                    {"description": "Design", "quantity": 1, "unit_price": "100.00", "total": "100.00"}
+                ],
+            },
+            format="json",
+        )
+        self.assertEqual(created.status_code, 201, created.data)
+        self.assertEqual(created.data["template"], "")
+
+        invoice = Invoice.objects.get(pk=created.data["id"])
+        self.assertEqual(resolve_invoice_template(invoice), "modern")
 
 
 class RemoteLikeLogoStorage(Storage):

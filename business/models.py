@@ -13,10 +13,12 @@ class Business(models.Model):
     TEMPLATE_CLASSIC = "classic"
     TEMPLATE_MODERN = "modern"
     TEMPLATE_MINIMAL = "minimal"
+    TEMPLATE_LETTERHEAD = "letterhead"
     INVOICE_TEMPLATE_CHOICES = (
         (TEMPLATE_CLASSIC, "Classic"),
         (TEMPLATE_MODERN, "Modern"),
         (TEMPLATE_MINIMAL, "Minimal"),
+        (TEMPLATE_LETTERHEAD, "Letterhead"),
     )
     owner = models.ForeignKey(
         settings.AUTH_USER_MODEL,
