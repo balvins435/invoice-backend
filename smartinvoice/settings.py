@@ -159,6 +159,15 @@ else:
             }
         }
 
+# Reuse database connections between requests. Django opens a fresh connection per
+# request by default, which adds a network round trip to every API call when the
+# database is a separate service. Health checks make sure a connection the database
+# has dropped is not handed out. Set CONN_MAX_AGE=0 to restore the old behaviour.
+CONN_MAX_AGE = env.int("CONN_MAX_AGE", default=60)
+CONN_HEALTH_CHECKS = True
+for _database in DATABASES.values():
+    _database.setdefault("CONN_MAX_AGE", CONN_MAX_AGE)
+
 AUTH_USER_MODEL = "users.User"
 
 AUTHENTICATION_BACKENDS = (

@@ -3,6 +3,8 @@ from io import BytesIO
 from decimal import Decimal
 
 from django.test import TestCase
+from django.core.files.base import ContentFile
+from django.core.files.storage import Storage
 from django.core.files.uploadedfile import SimpleUploadedFile
 from PIL import Image as PILImage
 
@@ -12,7 +14,9 @@ from invoice.models import Invoice, InvoiceItem, Receipt
 from invoice.utils import (
     generate_invoice_pdf,
     generate_receipt_pdf,
+    _load_logo,
     _validate_logo_file,
+    logo_bytes,
 )
 
 
@@ -246,3 +250,113 @@ class InvoiceTemplateRenderingTestCase(TestCase):
         invoice = self._invoice(business)
         pdf_buffer = generate_invoice_pdf(invoice)
         self.assertTrue(pdf_buffer.getvalue().startswith(b"%PDF"))
+
+
+class RemoteLikeLogoStorage(Storage):
+    """A minimal stand-in for a remote backend such as Cloudinary.
+
+    Files stay readable through the storage API, but path() raises - the exact
+    condition that used to drop logos from every generated PDF.
+    """
+
+    def __init__(self):
+        self._files = {}
+
+    def _save(self, name, content):
+        self._files[name] = content.read()
+        return name
+
+    def exists(self, name):
+        return name in self._files
+
+    def open(self, name, mode="rb"):
+        if name not in self._files:
+            raise FileNotFoundError(f"No such file in storage: {name}")
+        return ContentFile(self._files[name], name=name)
+
+    def delete(self, name):
+        self._files.pop(name, None)
+
+    def size(self, name):
+        return len(self._files.get(name, b""))
+
+    def url(self, name):
+        return f"https://cdn.example.com/media/{name}"
+
+    def path(self, name):
+        raise NotImplementedError("This backend does not expose filesystem paths.")
+
+
+class RemoteStorageLogoTestCase(TestCase):
+    """Logos must load from a backend that exposes no filesystem path."""
+
+    @staticmethod
+    def _png_bytes():
+        image = PILImage.new("RGBA", (120, 60), color=(15, 23, 42, 255))
+        buffer = BytesIO()
+        image.save(buffer, format="PNG")
+        return buffer.getvalue()
+
+    def setUp(self):
+        self.user = User.objects.create_user(
+            email="remote-storage@example.com", password="testpass123"
+        )
+        self.png = self._png_bytes()
+
+        # Swap the storage in first, so the upload lands in the remote-like
+        # backend rather than on disk.
+        self.field = Business._meta.get_field("logo")
+        self.original_storage = self.field.storage
+        self.field.storage = RemoteLikeLogoStorage()
+
+        self.business = Business.objects.create(
+            owner=self.user,
+            name="Remote Storage Co",
+            email="remote@example.com",
+            phone="+254700000000",
+            address="Nairobi",
+            logo=SimpleUploadedFile("remote.png", self.png, content_type="image/png"),
+        )
+        self.invoice = Invoice.objects.create(
+            business=self.business,
+            client_name="Remote Client",
+            client_email="remote-client@example.com",
+            issue_date="2026-03-24",
+            due_date="2026-04-24",
+            subtotal=Decimal("100.00"),
+            tax_amount=Decimal("16.00"),
+            total_amount=Decimal("116.00"),
+        )
+    def tearDown(self):
+        self.field.storage = self.original_storage
+        for business in Business.objects.all():
+            if business.logo:
+                business.logo.delete(save=False)
+
+    def test_fixture_really_hides_the_path(self):
+        with self.assertRaises(NotImplementedError):
+            self.business.logo.path
+
+    def test_logo_bytes_reads_through_the_storage_api(self):
+        self.assertEqual(logo_bytes(self.business), self.png)
+
+    def test_validation_succeeds_without_a_filesystem_path(self):
+        self.assertTrue(_validate_logo_file(self.business))
+
+    def test_logo_loads_without_a_filesystem_path(self):
+        flowable, is_circular, _ = _load_logo(self.business, "remote-storage-test")
+        self.assertIsNotNone(flowable)
+        self.assertFalse(is_circular)
+        self.assertGreater(flowable.drawWidth, 0)
+        self.assertGreater(flowable.drawHeight, 0)
+
+    def test_invoice_pdf_keeps_the_logo(self):
+        pdf_buffer = generate_invoice_pdf(self.invoice)
+        self.assertTrue(pdf_buffer.getvalue().startswith(b"%PDF"))
+        self.assertIsNotNone(_load_logo(self.business, "remote-storage-pdf")[0])
+
+    def test_deleted_logo_is_handled_gracefully(self):
+        self.business.logo.delete(save=False)
+        self.business.refresh_from_db()
+        self.assertIsNone(logo_bytes(self.business))
+        self.assertFalse(_validate_logo_file(self.business))

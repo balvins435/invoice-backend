@@ -67,7 +67,10 @@ transport differs, so switching provider is a matter of environment variables.
 ### Moving to Brevo
 
 1. Create the account, then verify a sender under Senders, Domains & Dedicated
-   IPs -> Senders. Brevo emails that address a confirmation link.
+   IPs -> Senders. Brevo emails that address a confirmation link. `BREVO_FROM_EMAIL`
+   must be exactly that address: Brevo answers the send API with `201` for an
+   unverified sender and rejects the message afterwards, so a mismatch looks like a
+   successful send that never arrives.
 2. Create a key under SMTP & API -> API Keys; it starts with `xkeysib-`. Tick
    Transactional email so the key can send, and Account if you also want `?probe=1`
    to report the remaining allowance. A key without the Account permission still
@@ -239,3 +242,27 @@ is the usual reason: Gmail treats mail claiming a `gmail.com` From address from
 outside Google as a spoofing signal, and frequently files it as spam or drops it.
 Authenticate a domain in the provider, or send from an address on one, before
 judging deliverability.
+
+
+### The `From` address is not a verified sender
+
+This is the most common accepted-then-dropped case. Brevo is the awkward one: it
+answers `201 Accepted` for an unverified sender and records the rejection only in
+its own delivery log, so the app reported "Invoice sent" for a message that was
+never delivered.
+
+Sending through Brevo now checks the account's sender list first and refuses with
+the addresses that *are* verified:
+
+```text
+Brevo has no verified sender for billing@example.com, and it drops mail sent from
+an unverified address. Verified senders on this account: owner@example.com.
+```
+
+Point `BREVO_FROM_EMAIL` at one of the listed addresses, or add and confirm the
+current one under Senders, Domains & Dedicated IPs -> Senders. `?probe=1` reports
+the same check, so it can be run before a real invoice is sent.
+
+The check fails open: if the sender list cannot be read (missing permission,
+network problem, unexpected payload) the send proceeds and Brevo keeps the final
+say.

@@ -104,37 +104,61 @@ def _status_colors(status):
     return palette.get((status or "").lower(), (BRAND_BORDER, BRAND_TEXT))
 
 
+def logo_bytes(business):
+    """Return the stored logo as bytes, for local and remote storage alike.
+
+    ``FieldFile.path`` only exists on filesystem storage; a remote backend such
+    as Cloudinary raises ``NotImplementedError`` for it, which used to drop the
+    logo from invoice, receipt and report PDFs. Read through the storage API
+    instead so the mark renders wherever the file is kept.
+    """
+    logo = getattr(business, "logo", None)
+    if not logo:
+        return None
+
+    try:
+        path = logo.path
+    except (NotImplementedError, ValueError, AttributeError):
+        path = None
+
+    if path:
+        try:
+            if os.path.exists(path):
+                with open(path, "rb") as handle:
+                    return handle.read()
+        except OSError as exc:
+            logger.warning("Could not read the logo file at %s: %s", path, exc)
+
+    try:
+        with logo.open("rb") as handle:
+            return handle.read() or None
+    except Exception as exc:
+        logger.warning(
+            "Could not fetch the logo for business_id=%s from storage: %s",
+            getattr(business, "id", None),
+            exc,
+        )
+        return None
+
+
 def _validate_logo_file(business):
     if not business.logo:
         return False
 
-    try:
-        logo_path = business.logo.path
-        if not os.path.exists(logo_path):
-            logger.warning(
-                "Logo file missing for business_id=%s: path=%s",
-                business.id,
-                logo_path,
-            )
-            return False
+    if logo_bytes(business):
         return True
-    except Exception as exc:
-        logger.error(
-            "Error validating logo for business_id=%s: %s",
-            business.id,
-            str(exc),
-            exc_info=True,
-        )
-        return False
+
+    logger.warning("Logo file missing or unreadable for business_id=%s", business.id)
+    return False
 
 
-def _logo_scale(logo_path, max_width, max_height):
+def _logo_scale(logo_data, max_width, max_height):
     """Fit the logo inside the box without distorting its aspect ratio."""
     try:
-        with PILImage.open(logo_path) as image:
+        with PILImage.open(BytesIO(logo_data)) as image:
             width, height = image.size
     except Exception as exc:
-        logger.warning("Unable to read logo dimensions for %s: %s", logo_path, exc)
+        logger.warning("Unable to read logo dimensions: %s", exc)
         return max_width, max_height
 
     if not width or not height:
@@ -144,10 +168,10 @@ def _logo_scale(logo_path, max_width, max_height):
     return width * scale, height * scale
 
 
-def _logo_is_light(logo_path):
+def _logo_is_light(logo_data):
     """Sample the mark so the plate behind it can be picked for contrast."""
     try:
-        with PILImage.open(logo_path) as source:
+        with PILImage.open(BytesIO(logo_data)) as source:
             image = source.convert("RGBA")
     except Exception as exc:
         logger.warning("Unable to sample logo luminance: %s", exc)
@@ -171,10 +195,10 @@ def _logo_is_light(logo_path):
     return (total / samples) >= 200
 
 
-def _circular_logo_source(logo_path):
+def _circular_logo_source(logo_data):
     """Mask the logo to a circle so `logo_shape='circle'` is honoured in the PDF."""
     try:
-        with PILImage.open(logo_path) as source:
+        with PILImage.open(BytesIO(logo_data)) as source:
             image = source.convert("RGBA")
         side = min(image.size)
         left = (image.width - side) // 2
@@ -197,31 +221,33 @@ def _circular_logo_source(logo_path):
 
 
 def _load_logo(business, log_context):
-    if not _validate_logo_file(business):
-        return None, False
+    """Return (flowable, is_circular, is_light) for the stored logo."""
+    logo_data = logo_bytes(business)
+    if not logo_data:
+        return None, False, False
 
     try:
-        logo_path = business.logo.path
         is_circle = getattr(business, "logo_shape", "") == "circle"
-        masked_source = _circular_logo_source(logo_path) if is_circle else None
+        masked_source = _circular_logo_source(logo_data) if is_circle else None
+        is_light = _logo_is_light(logo_data)
 
         if masked_source is not None:
             side = min(LOGO_MAX_WIDTH, LOGO_MAX_HEIGHT)
             width = height = side
             logo_flowable = Image(masked_source)
         else:
-            width, height = _logo_scale(logo_path, LOGO_MAX_WIDTH, LOGO_MAX_HEIGHT)
-            logo_flowable = Image(logo_path)
+            width, height = _logo_scale(logo_data, LOGO_MAX_WIDTH, LOGO_MAX_HEIGHT)
+            logo_flowable = Image(BytesIO(logo_data))
 
         logo_flowable.drawWidth = width
         logo_flowable.drawHeight = height
         logo_flowable.hAlign = "CENTER"
 
         logger.debug("Logo loaded successfully for %s", log_context)
-        return logo_flowable, masked_source is not None
+        return logo_flowable, masked_source is not None, is_light
     except Exception as exc:
         logger.warning("Failed to load logo for %s: %s", log_context, str(exc), exc_info=True)
-        return None, False
+        return None, False, False
 
 
 def _build_styles():
@@ -440,12 +466,12 @@ def _build_header_meta(badge_text, badge_background, badge_color, meta_pairs, st
 
 
 def _build_header(eyebrow, title, contact_lines, meta_pairs, badge_text, badge_background, badge_color, business, styles, log_context, palette):
-    logo, is_circular = _load_logo(business, log_context)
+    logo, is_circular, is_light = _load_logo(business, log_context)
     left_pad, right_pad = 22, 10
     content_width = HEADER_LEFT - left_pad - right_pad
 
     if logo is not None:
-        light_logo = _logo_is_light(business.logo.path)
+        light_logo = is_light
         plate = palette["logo_plate_dark"] if light_logo else palette["logo_plate"]
         if plate is None:
             logo.hAlign = "LEFT"

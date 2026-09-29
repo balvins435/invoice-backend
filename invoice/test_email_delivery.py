@@ -18,6 +18,7 @@ from invoice.email_utils import (
     BREVO_PROVIDER,
     SENDGRID_PROVIDER,
     SMTP_PROVIDER,
+    brevo_verified_senders,
     EmailConfigurationError,
     InvoiceEmailError,
     email_diagnostics,
@@ -929,3 +930,187 @@ class BrevoDiagnosticsTests(TestCase):
         report = email_diagnostics()
 
         self.assertNotIn("xkeysib-", " ".join(report["warnings"]))
+
+
+BREVO_SENDERS_URL = "https://api.brevo.com/v3/senders?limit=100"
+BREVO_SEND_URL = "https://api.brevo.com/v3/smtp/email"
+BREVO_VERIFIED_SENDERS_BODY = (
+    b'{"senders":[{"id":1,"name":"BalTech","email":"billing@example.com","active":true}]}'
+)
+
+
+def brevo_urlopen(*, senders_body=b"", senders_error=None):
+    """Answer the sender lookup and the send separately, the way Brevo does."""
+
+    def handler(request, timeout=None):
+        if request.full_url.startswith("https://api.brevo.com/v3/senders"):
+            if senders_error is not None:
+                raise senders_error
+            return FakeResponse(status=200, body=senders_body)
+        return FakeResponse(status=201, body=b'{"messageId":"<1@brevo>"}')
+
+    return handler
+
+
+class BrevoSenderVerificationTests(TestCase):
+    """Brevo answers 201 for an unverified sender and drops the mail afterwards.
+
+    The API call looks successful, so without a pre-flight check the app reports
+    "Invoice sent" for a message the recipient never receives.
+    """
+
+    @staticmethod
+    def _urls(urlopen):
+        return [call.args[0].full_url for call in urlopen.call_args_list]
+
+    @override_settings(**BREVO_SETTINGS)
+    def test_lookup_identifies_itself_to_brevo(self):
+        with mock.patch(
+            "invoice.email_utils.urlrequest.urlopen",
+            side_effect=brevo_urlopen(senders_body=BREVO_VERIFIED_SENDERS_BODY),
+        ) as urlopen:
+            send_email_message(
+                subject="Invoice", recipients=["client@example.com"], text_content="Body"
+            )
+
+        request = urlopen.call_args_list[0].args[0]
+        self.assertEqual(request.full_url, BREVO_SENDERS_URL)
+        self.assertEqual(request.get_header("Api-key"), "xkeysib-test-key")
+        self.assertTrue(request.get_header("User-agent"))
+
+    @override_settings(**BREVO_SETTINGS)
+    def test_send_is_refused_for_an_unverified_sender(self):
+        with mock.patch(
+            "invoice.email_utils.urlrequest.urlopen",
+            side_effect=brevo_urlopen(senders_body=b'{"senders":[]}'),
+        ) as urlopen:
+            with self.assertRaisesMessage(
+                InvoiceEmailError, "Brevo has no verified sender for billing@example.com"
+            ):
+                send_email_message(
+                    subject="Invoice", recipients=["client@example.com"], text_content="Body"
+                )
+
+        self.assertEqual(self._urls(urlopen), [BREVO_SENDERS_URL])
+
+    @override_settings(**BREVO_SETTINGS)
+    def test_refusal_lists_the_senders_that_are_verified(self):
+        body = b'{"senders":[{"email":"owner@example.com","active":true}]}'
+        with mock.patch(
+            "invoice.email_utils.urlrequest.urlopen", side_effect=brevo_urlopen(senders_body=body)
+        ):
+            with self.assertRaisesMessage(InvoiceEmailError, "owner@example.com"):
+                send_email_message(
+                    subject="Invoice", recipients=["client@example.com"], text_content="Body"
+                )
+
+    @override_settings(**BREVO_SETTINGS)
+    def test_send_proceeds_for_a_verified_sender(self):
+        with mock.patch(
+            "invoice.email_utils.urlrequest.urlopen",
+            side_effect=brevo_urlopen(senders_body=BREVO_VERIFIED_SENDERS_BODY),
+        ) as urlopen:
+            send_email_message(
+                subject="Invoice", recipients=["client@example.com"], text_content="Body"
+            )
+
+        self.assertEqual(self._urls(urlopen), [BREVO_SENDERS_URL, BREVO_SEND_URL])
+
+    @override_settings(**BREVO_SETTINGS)
+    def test_sender_match_ignores_case_and_padding(self):
+        body = b'{"senders":[{"email":" Billing@Example.COM ","active":true}]}'
+        with mock.patch(
+            "invoice.email_utils.urlrequest.urlopen", side_effect=brevo_urlopen(senders_body=body)
+        ) as urlopen:
+            send_email_message(
+                subject="Invoice", recipients=["client@example.com"], text_content="Body"
+            )
+
+        self.assertEqual(len(urlopen.call_args_list), 2)
+
+    @override_settings(**BREVO_SETTINGS)
+    def test_inactive_senders_are_not_verified(self):
+        body = b'{"senders":[{"email":"billing@example.com","active":false}]}'
+        with mock.patch(
+            "invoice.email_utils.urlrequest.urlopen", side_effect=brevo_urlopen(senders_body=body)
+        ):
+            with self.assertRaisesMessage(InvoiceEmailError, "Brevo has no verified sender"):
+                send_email_message(
+                    subject="Invoice", recipients=["client@example.com"], text_content="Body"
+                )
+
+    @override_settings(**BREVO_SETTINGS)
+    def test_send_proceeds_when_the_sender_list_is_unreadable(self):
+        cases = (("no array", b"{}"), ("empty", b""), ("not json", b"<html>nope</html>"))
+        for label, body in cases:
+            with self.subTest(label=label):
+                with mock.patch(
+                    "invoice.email_utils.urlrequest.urlopen",
+                    side_effect=brevo_urlopen(senders_body=body),
+                ) as urlopen:
+                    send_email_message(
+                        subject="Invoice", recipients=["client@example.com"], text_content="Body"
+                    )
+
+                self.assertEqual(len(urlopen.call_args_list), 2)
+
+    @override_settings(**BREVO_SETTINGS)
+    def test_send_proceeds_when_the_sender_request_errors(self):
+        error = urlerror.HTTPError(
+            BREVO_SENDERS_URL, 403, "Forbidden", {}, BytesIO(b'{"message":"not allowed"}')
+        )
+        with mock.patch(
+            "invoice.email_utils.urlrequest.urlopen",
+            side_effect=brevo_urlopen(senders_error=error),
+        ) as urlopen:
+            send_email_message(
+                subject="Invoice", recipients=["client@example.com"], text_content="Body"
+            )
+
+        self.assertEqual(len(urlopen.call_args_list), 2)
+
+    @override_settings(**BREVO_SETTINGS)
+    def test_sender_list_is_only_trusted_when_it_carries_senders(self):
+        with mock.patch(
+            "invoice.email_utils.urlrequest.urlopen",
+            return_value=FakeResponse(
+                status=200, body=b'{"senders":[{"email":"billing@example.com"}]}'
+            ),
+        ):
+            checked, senders = brevo_verified_senders()
+
+        self.assertTrue(checked)
+        self.assertEqual(senders, ["billing@example.com"])
+
+        with mock.patch(
+            "invoice.email_utils.urlrequest.urlopen",
+            return_value=FakeResponse(status=200, body=b'{"emailCredits":269}'),
+        ):
+            checked, senders = brevo_verified_senders()
+
+        self.assertFalse(checked)
+        self.assertEqual(senders, [])
+
+
+class BrevoProbeSenderTests(TestCase):
+    @override_settings(**BREVO_SETTINGS)
+    def test_probe_flags_an_unverified_sender(self):
+        with mock.patch(
+            "invoice.email_utils.urlrequest.urlopen",
+            side_effect=brevo_urlopen(senders_body=b'{"senders":[]}'),
+        ):
+            report = probe_email_provider()
+
+        self.assertFalse(report["ok"])
+        self.assertIn("not a verified Brevo sender", report["detail"])
+
+    @override_settings(**BREVO_SETTINGS)
+    def test_probe_confirms_a_verified_sender(self):
+        with mock.patch(
+            "invoice.email_utils.urlrequest.urlopen",
+            side_effect=brevo_urlopen(senders_body=BREVO_VERIFIED_SENDERS_BODY),
+        ):
+            report = probe_email_provider()
+
+        self.assertTrue(report["ok"])
+        self.assertIn("is a verified sender", report["detail"])

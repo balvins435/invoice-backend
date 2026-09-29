@@ -10,6 +10,8 @@ from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
 from reportlab.platypus import Image, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
+from invoice.utils import logo_bytes
+
 from .services import monthly_report, monthly_reports_for_year, tax_summary
 
 
@@ -21,10 +23,12 @@ def _build_business_header(business, styles):
     logo_flowable = None
     if business.logo:
         try:
-            logo_flowable = Image(business.logo.path)
-            logo_flowable.drawHeight = 12 * mm
-            logo_flowable.drawWidth = 12 * mm
-            logo_flowable.hAlign = "LEFT"
+            logo_data = logo_bytes(business)
+            if logo_data:
+                logo_flowable = Image(BytesIO(logo_data))
+                logo_flowable.drawHeight = 12 * mm
+                logo_flowable.drawWidth = 12 * mm
+                logo_flowable.hAlign = "LEFT"
         except Exception:
             logo_flowable = None
 

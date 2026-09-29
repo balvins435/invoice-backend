@@ -65,7 +65,15 @@ SENDGRID_CREDITS_URL = "https://api.sendgrid.com/v3/user/credits"
 
 BREVO_SEND_URL = "https://api.brevo.com/v3/smtp/email"
 BREVO_ACCOUNT_URL = "https://api.brevo.com/v3/account"
+BREVO_SENDERS_URL = "https://api.brevo.com/v3/senders?limit=100"
 BREVO_KEY_PREFIX = "xkeysib-"
+
+# Brevo sits behind Cloudflare, which answers urllib's default user agent with a
+# 1010 "browser signature banned" error on some endpoints (notably /v3/senders),
+# so identify the client explicitly on every Brevo call.
+BREVO_USER_AGENT = "SmartInvoice/1.0 (+https://invoice-backend-7zkw.onrender.com)"
+# Bound the sender lookup so a slow Brevo endpoint cannot stall every send.
+BREVO_SENDER_LOOKUP_TIMEOUT = 5
 
 SMTP_EGRESS_BLOCKED_HINT = (
     "Render blocks outbound SMTP traffic on ports 25, 465 and 587 for free web "
@@ -432,7 +440,81 @@ def _send_via_sendgrid(*, subject, text_content, html_content, recipients, attac
         raise InvoiceEmailError(f"Could not reach the SendGrid API: {exc}") from exc
 
 
+def brevo_verified_senders():
+    """Return ``(checked, addresses)`` for the senders verified in Brevo.
+
+    ``checked`` is False when the list could not be read (missing permission,
+    connectivity, an unexpected payload). Callers fail open in that case rather
+    than block a send over a problem that has nothing to do with the sender.
+    """
+    request = urlrequest.Request(
+        BREVO_SENDERS_URL,
+        headers={
+            "api-key": _provider_api_key(BREVO_PROVIDER),
+            "Accept": "application/json",
+            "User-Agent": BREVO_USER_AGENT,
+        },
+        method="GET",
+    )
+    try:
+        with urlrequest.urlopen(
+            request, timeout=min(_timeout(), BREVO_SENDER_LOOKUP_TIMEOUT)
+        ) as response:
+            payload = json.loads(response.read().decode("utf-8", errors="ignore"))
+    except urlerror.HTTPError as exc:
+        logger.warning("Brevo sender list is unavailable (HTTP %s).", exc.code)
+        return False, []
+    except (urlerror.URLError, TimeoutError, OSError, ValueError) as exc:
+        logger.warning("Brevo sender list is unavailable: %s", exc)
+        return False, []
+
+    if not isinstance(payload, dict):
+        return False, []
+
+    # A payload without a sender list means the answer is unknown, not that the
+    # account has no senders, so report the lookup as unusable and fail open.
+    entries = payload.get("senders")
+    if not isinstance(entries, list):
+        logger.warning("Brevo sender list response carried no senders array.")
+        return False, []
+
+    senders = [
+        str(entry.get("email", "")).strip()
+        for entry in entries
+        if isinstance(entry, dict) and entry.get("email") and entry.get("active", True)
+    ]
+    return True, senders
+
+
+def _reject_unverified_brevo_sender(from_email):
+    """Refuse a send Brevo would accept and then quietly drop.
+
+    Brevo answers HTTP 201 for a from address it has not verified and records the
+    rejection only in its own delivery log, so the API reports a success the
+    recipient never sees. Checking the sender list first turns that silent
+    failure into an error the caller can act on. A lookup that does not work is
+    ignored: the send proceeds and Brevo keeps the final say.
+    """
+    checked, senders = brevo_verified_senders()
+    if not checked:
+        return
+    if from_email.strip().lower() in {sender.lower() for sender in senders}:
+        return
+
+    listed = ", ".join(senders) if senders else "none"
+    raise InvoiceEmailError(
+        f"Brevo has no verified sender for {from_email}, and it drops mail sent "
+        f"from an unverified address. Verified senders on this account: {listed}. "
+        "Point BREVO_FROM_EMAIL at one of them, or add this address under "
+        "Senders, Domains & Dedicated IPs -> Senders and click the confirmation "
+        "link Brevo emails to it. Brevo accepts the API call with HTTP 201 and "
+        "reports the rejection only in its delivery log, so the message would "
+        "otherwise vanish without any error."
+    )
+
+
 def _send_via_brevo(*, subject, text_content, html_content, recipients, attachments, from_email):
+    _reject_unverified_brevo_sender(from_email)
     payload = {
         "sender": {"email": from_email},
         "to": [{"email": address} for address in recipients],
@@ -460,6 +542,7 @@ def _send_via_brevo(*, subject, text_content, html_content, recipients, attachme
             "api-key": _provider_api_key(BREVO_PROVIDER),
             "Content-Type": "application/json",
             "Accept": "application/json",
+            "User-Agent": BREVO_USER_AGENT,
         },
         method="POST",
     )
@@ -728,6 +811,32 @@ def _probe_brevo():
     detail = "Brevo accepted the API key."
     if credits is not None:
         detail = f"{detail} Email allowance reported: {credits}."
+
+    # A send from an address Brevo has not verified is accepted with HTTP 201 and
+    # dropped afterwards, so report it here rather than let it fail silently.
+    sender = _provider_sender(BREVO_PROVIDER)
+    checked, senders = brevo_verified_senders()
+    if not sender:
+        problem = "No BREVO_FROM_EMAIL or DEFAULT_FROM_EMAIL is configured."
+    elif checked and sender.strip().lower() not in {s.lower() for s in senders}:
+        listed = ", ".join(senders) if senders else "none"
+        problem = (
+            f"{sender} is not a verified Brevo sender, so Brevo drops every "
+            f"message sent from it. Verified senders on this account: {listed}. "
+            "Set BREVO_FROM_EMAIL to one of them, or add this address under "
+            "Senders, Domains & Dedicated IPs -> Senders."
+        )
+    else:
+        problem = None
+
+    if problem:
+        return {
+            "ok": False,
+            "detail": f"{detail} {problem}",
+            "email_credits": credits,
+        }
+    if checked:
+        detail = f"{detail} {sender} is a verified sender."
     return {"ok": True, "detail": detail, "email_credits": credits}
 
 
