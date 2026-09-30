@@ -14,11 +14,13 @@ class Business(models.Model):
     TEMPLATE_MODERN = "modern"
     TEMPLATE_MINIMAL = "minimal"
     TEMPLATE_LETTERHEAD = "letterhead"
+    TEMPLATE_ETIMS = "etims"
     INVOICE_TEMPLATE_CHOICES = (
         (TEMPLATE_CLASSIC, "Classic"),
         (TEMPLATE_MODERN, "Modern"),
         (TEMPLATE_MINIMAL, "Minimal"),
         (TEMPLATE_LETTERHEAD, "Letterhead"),
+        (TEMPLATE_ETIMS, "eTIMS Tax Invoice"),
     )
     owner = models.ForeignKey(
         settings.AUTH_USER_MODEL,
@@ -41,6 +43,12 @@ class Business(models.Model):
         max_digits=5,
         decimal_places=2,
         default=16.00
+    )
+    kra_pin = models.CharField(
+        max_length=20,
+        blank=True,
+        default="",
+        help_text="KRA PIN printed in the supplier block of an eTIMS tax invoice.",
     )
     default_invoice_template = models.CharField(
         max_length=20,

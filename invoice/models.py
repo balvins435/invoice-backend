@@ -30,11 +30,13 @@ class Invoice(models.Model):
     TEMPLATE_MODERN = 'modern'
     TEMPLATE_MINIMAL = 'minimal'
     TEMPLATE_LETTERHEAD = 'letterhead'
+    TEMPLATE_ETIMS = 'etims'
     TEMPLATE_CHOICES = (
         (TEMPLATE_CLASSIC, 'Classic'),
         (TEMPLATE_MODERN, 'Modern'),
         (TEMPLATE_MINIMAL, 'Minimal'),
         (TEMPLATE_LETTERHEAD, 'Letterhead'),
+        (TEMPLATE_ETIMS, 'eTIMS Tax Invoice'),
     )
 
     STATUS_CHOICES = (
@@ -56,7 +58,12 @@ class Invoice(models.Model):
 
     client_name = models.CharField(max_length=255)
     client_email = models.EmailField()
-
+    client_pin = models.CharField(
+        max_length=20,
+        blank=True,
+        default='',
+        help_text="Buyer KRA PIN printed in the customer block of an eTIMS tax invoice.",
+    )
     issue_date = models.DateField()
     due_date = models.DateField()
 
@@ -112,6 +119,12 @@ class InvoiceItem(models.Model):
         Invoice,
         related_name='items',
         on_delete=models.CASCADE
+    )
+    code = models.CharField(
+        max_length=64,
+        blank=True,
+        default='',
+        help_text="Stock or item code printed on an eTIMS tax invoice.",
     )
     description = models.CharField(max_length=255)
     quantity = models.PositiveIntegerField()

@@ -17,6 +17,7 @@ from invoice.utils import (
     generate_receipt_pdf,
     invoice_template_catalogue,
     resolve_invoice_template,
+    _etims_context,
     _load_logo,
     _validate_logo_file,
     logo_bytes,
@@ -261,6 +262,43 @@ class InvoiceTemplateRenderingTestCase(TestCase):
         pdf_buffer = generate_invoice_pdf(invoice)
         self.assertTrue(pdf_buffer.getvalue().startswith(b"%PDF"))
 
+    def test_etims_pdf_carries_pins_item_codes_and_scu_values(self):
+        business = self._business(name="Hubtech Limited", kra_pin="P051468764V")
+        invoice = self._invoice(
+            business,
+            template="etims",
+            client_pin="P051345577Q",
+            tax_invoice_number="KRACU0200215744/353",
+        )
+        InvoiceItem.objects.create(
+            invoice=invoice,
+            code="KE2GTXBXX00015",
+            description="HP 15-fd0215dx Intel Core 5 120U",
+            quantity=1,
+            unit_price=Decimal("100000.00"),
+            total=Decimal("100000.00"),
+        )
+
+        context = _etims_context(invoice)
+        self.assertEqual(context["business_pin"], "P051468764V")
+        self.assertEqual(context["client_pin"], "P051345577Q")
+        self.assertEqual(context["currency_symbol"], "KSh")
+        self.assertEqual(context["items"][0]["code"], "KE2GTXBXX00015")
+
+        pdf_buffer = generate_invoice_pdf(invoice)
+        self.assertTrue(pdf_buffer.getvalue().startswith(b"%PDF"))
+
+    def test_etims_template_renders_without_a_tax_submission(self):
+        business = self._business(name="No SCU Co")
+        invoice = self._invoice(business, template="etims")
+
+        context = _etims_context(invoice)
+        self.assertEqual(context["scu_id"], "")
+        self.assertEqual(context["qr_payload"], "")
+
+        pdf_buffer = generate_invoice_pdf(invoice)
+        self.assertTrue(pdf_buffer.getvalue().startswith(b"%PDF"))
+
     def test_invoice_inherits_business_default_template(self):
         business = self._business(name="Inheriting Business", default_invoice_template="modern")
         invoice = self._invoice(business, template="")
@@ -285,12 +323,12 @@ class InvoiceTemplateRenderingTestCase(TestCase):
         catalogue = invoice_template_catalogue()
         self.assertEqual(
             [entry["id"] for entry in catalogue],
-            ["classic", "modern", "minimal", "letterhead"],
+            ["classic", "modern", "minimal", "letterhead", "etims"],
         )
         for entry in catalogue:
             self.assertTrue(entry["name"])
             self.assertTrue(entry["description"])
-            self.assertIn(entry["layout"], {"hero", "letterhead"})
+            self.assertIn(entry["layout"], {"hero", "letterhead", "etims"})
             self.assertTrue(entry["palette"])
             for value in entry["palette"].values():
                 self.assertRegex(value, r"^#[0-9A-F]{6}$")
@@ -312,7 +350,7 @@ class InvoiceTemplateEndpointTestCase(TestCase):
         self.assertEqual(response.status_code, 200, response.data)
         self.assertEqual(
             [entry["id"] for entry in response.json()],
-            ["classic", "modern", "minimal", "letterhead"],
+            ["classic", "modern", "minimal", "letterhead", "etims"],
         )
 
     def test_templates_endpoint_requires_authentication(self):

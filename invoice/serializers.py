@@ -10,7 +10,7 @@ from .models import Invoice, InvoiceItem, Receipt
 class InvoiceItemSerializer(serializers.ModelSerializer):
     class Meta:
         model = InvoiceItem
-        fields = ["id", "description", "quantity", "unit_price", "total"]
+        fields = ["id", "code", "description", "quantity", "unit_price", "total"]
         read_only_fields = ["id", "total"]
 
 
@@ -50,6 +50,7 @@ class InvoiceSerializer(serializers.ModelSerializer):
             "invoice_number",
             "client_name",
             "client_email",
+            "client_pin",
             "issue_date",
             "due_date",
             "subtotal",

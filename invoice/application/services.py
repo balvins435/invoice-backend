@@ -14,6 +14,7 @@ def _create_items(invoice, items_data):
         [
             InvoiceItem(
                 invoice=invoice,
+                code=item.get("code", ""),
                 description=item["description"],
                 quantity=item["quantity"],
                 unit_price=item["unit_price"],

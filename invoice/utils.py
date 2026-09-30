@@ -21,6 +21,8 @@ from reportlab.platypus import (
     TableStyle,
 )
 
+from invoice.etims_template import build_etims_pdf as _build_etims_document
+
 logger = logging.getLogger(__name__)
 
 PAGE_MARGIN = 18 * mm
@@ -53,6 +55,7 @@ BRAND_DANGER_BG = colors.HexColor("#FEE2E2")
 BRAND_DANGER_TEXT = colors.HexColor("#991B1B")
 
 TEMPLATE_LETTERHEAD = "letterhead"
+TEMPLATE_ETIMS = "etims"
 LETTERHEAD_INK = colors.HexColor("#111827")
 LETTERHEAD_MUTED = colors.HexColor("#52525B")
 LETTERHEAD_RULE = colors.HexColor("#18181B")
@@ -359,6 +362,28 @@ def _template_palette(template):
             "border": LETTERHEAD_HAIRLINE,
             "surface": colors.white,
         }
+    if template == TEMPLATE_ETIMS:
+        ink = colors.HexColor("#111111")
+        return {
+            "header_bg": colors.white,
+            "header_border": ink,
+            "header_text": ink,
+            "header_soft": colors.HexColor("#52525B"),
+            "header_eyebrow": colors.HexColor("#52525B"),
+            "accent": ink,
+            "logo_plate": None,
+            "logo_plate_dark": None,
+            "logo_chip_border": None,
+            "hero_bg": colors.white,
+            "hero_text": ink,
+            "table_head_bg": colors.HexColor("#EAEAEA"),
+            "table_head_text": ink,
+            "table_head_rule": ink,
+            "grand_bg": colors.white,
+            "grand_text": ink,
+            "border": ink,
+            "surface": colors.white,
+        }
     return {
         "header_bg": BRAND_NAVY,
         "header_border": None,
@@ -398,6 +423,7 @@ TEMPLATE_LAYOUTS = {
     "modern": "hero",
     "minimal": "hero",
     TEMPLATE_LETTERHEAD: "letterhead",
+    TEMPLATE_ETIMS: "etims",
 }
 
 TEMPLATE_META = (
@@ -405,6 +431,11 @@ TEMPLATE_META = (
     ("modern", "Modern", "Fresh emerald header for a confident, contemporary look."),
     ("minimal", "Minimal", "Quiet whitespace with hairline rules and understated type."),
     (TEMPLATE_LETTERHEAD, "Letterhead", "Timeless letterhead with a ruled, bordered table."),
+    (
+        TEMPLATE_ETIMS,
+        "eTIMS Tax Invoice",
+        "KRA eTIMS tax invoice with SCU panel, verification QR and tax summary grid.",
+    ),
 )
 
 TEMPLATE_IDS = tuple(entry[0] for entry in TEMPLATE_META)
@@ -1215,6 +1246,84 @@ def _build_letterhead_pdf(invoice, styles, buffer, business_name):
     return buffer
 
 
+CURRENCY_SYMBOLS = {
+    "KES": "KSh",
+    "TZS": "TSh",
+    "UGX": "USh",
+    "USD": "$",
+    "EUR": "\u20ac",
+    "GBP": "\u00a3",
+}
+
+
+def _currency_symbol(currency):
+    code = str(currency or "").strip().upper()
+    return CURRENCY_SYMBOLS.get(code, code or "KSh")
+
+
+def _etims_timestamp(invoice):
+    """The eTIMS form prints the issue date together with the submission time."""
+    issue_date = invoice.issue_date
+    date_text = (
+        issue_date.strftime("%d/%m/%Y")
+        if hasattr(issue_date, "strftime")
+        else str(issue_date or "")
+    )
+    stamp = getattr(invoice, "created_at", None)
+    if hasattr(stamp, "strftime"):
+        return f"{date_text} {stamp.strftime('%H:%M:%S')}"
+    return date_text
+
+
+def _etims_scu_values(invoice):
+    """Read SCU id, internal data, signature and QR straight from the eTIMS reply."""
+    submission = invoice.tax_submissions.order_by("-created_at").first()
+    payload = submission.response_payload if submission is not None else {}
+    if not isinstance(payload, dict):
+        payload = {}
+    return (
+        payload.get("scuId") or payload.get("scu_id") or "",
+        payload.get("internalData") or payload.get("internal_data") or "",
+        payload.get("receiptSignature") or payload.get("receipt_signature") or "",
+        payload.get("qrCode") or payload.get("qrPayload") or payload.get("qr_code") or "",
+    )
+
+
+def _etims_context(invoice):
+    """Resolve invoice data into the plain dict the eTIMS renderer expects."""
+    business = invoice.business
+    scu_id, internal_data, receipt_signature, qr_payload = _etims_scu_values(invoice)
+    return {
+        "invoice_number": invoice.invoice_number,
+        "tax_invoice_number": invoice.tax_invoice_number,
+        "issued_at_text": _etims_timestamp(invoice),
+        "business_name": business.display_name or business.name,
+        "business_pin": getattr(business, "kra_pin", ""),
+        "client_name": invoice.client_name,
+        "client_pin": getattr(invoice, "client_pin", ""),
+        "currency_symbol": _currency_symbol(invoice.currency),
+        "tax_rate": business.tax_rate,
+        "subtotal": invoice.subtotal,
+        "tax_amount": invoice.tax_amount,
+        "total_amount": invoice.total_amount,
+        "items": [
+            {
+                "code": getattr(item, "code", ""),
+                "description": item.description,
+                "quantity": item.quantity,
+                "unit_price": item.unit_price,
+                "total": item.total,
+            }
+            for item in invoice.items.all()
+        ],
+        "scu_id": scu_id,
+        "internal_data": internal_data,
+        "receipt_signature": receipt_signature,
+        "qr_payload": qr_payload,
+        "logo": logo_bytes(business),
+    }
+
+
 def generate_invoice_pdf(invoice, template=None):
     styles = _build_styles()
     selected_template = resolve_invoice_template(invoice, template)
@@ -1227,6 +1336,8 @@ def generate_invoice_pdf(invoice, template=None):
 
     if selected_template == TEMPLATE_LETTERHEAD:
         return _build_letterhead_pdf(invoice, styles, buffer, business_name)
+    if selected_template == TEMPLATE_ETIMS:
+        return _build_etims_document(_etims_context(invoice))
 
     currency = invoice.currency or "KES"
     amount_due = _format_money(invoice.balance_due, currency)

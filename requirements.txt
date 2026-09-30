@@ -20,6 +20,7 @@ django-environ
 # PDF Generation
 Pillow
 reportlab
+qrcode
 
 # Async Tasks
 celery

@@ -1,3 +1,4 @@
+import hashlib
 import json
 import logging
 from urllib import error, request
@@ -29,12 +30,14 @@ class EtimsService:
             "client": {
                 "name": invoice.client_name,
                 "email": invoice.client_email,
+                "pin": invoice.client_pin,
             },
             "seller": {
                 "name": invoice.business.name,
                 "email": invoice.business.email,
                 "phone": invoice.business.phone,
                 "address": invoice.business.address,
+                "pin": getattr(invoice.business, "kra_pin", ""),
             },
             "totals": {
                 "subtotal": str(invoice.subtotal),
@@ -43,6 +46,7 @@ class EtimsService:
             },
             "items": [
                 {
+                    "code": item.code,
                     "description": item.description,
                     "quantity": item.quantity,
                     "unitPrice": str(item.unit_price),
@@ -101,11 +105,21 @@ class EtimsService:
 
         if not self._is_live_configured():
             tax_invoice_number = f"ETIMS-{timezone.localtime().strftime('%Y%m%d')}-{invoice.id}"
+            # Deterministic, clearly-simulated SCU values so the eTIMS tax
+            # invoice renders end to end before live credentials are wired up.
+            digest = hashlib.sha1(f"{invoice.business_id}:{invoice.invoice_number}".encode("utf-8")).hexdigest().upper()
+            scu_id = f"KRACU{invoice.id:010d}"
+            internal_data = "-".join(digest[index:index + 4] for index in range(0, 24, 4))
+            receipt_signature = "-".join(digest[index:index + 4] for index in range(24, 40, 4))
             submission.status = TaxSubmission.STATUS_SUBMITTED
             submission.tax_invoice_number = tax_invoice_number
             submission.response_payload = {
                 "message": "Simulated eTIMS submission accepted.",
                 "taxInvoiceNumber": tax_invoice_number,
+                "scuId": scu_id,
+                "internalData": internal_data,
+                "receiptSignature": receipt_signature,
+                "qrCode": f"https://etims.kra.go.ke/common/link/etims/receipt/indexEtimsReceipt?invoiceNo={tax_invoice_number}",
             }
             submission.submitted_at = timezone.now()
             submission.save()
